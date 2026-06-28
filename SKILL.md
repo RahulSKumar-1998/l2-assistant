@@ -50,18 +50,14 @@ The codebase is substantial and mostly scaffolded, but some parts are **fully im
 
 ### Partially wired or inconsistent areas
 
-- Worker code imports top-level helpers that do not exist:
-  - `app.core.rag_pipeline.analyze`
-  - `app.core.rag_pipeline.chat`
-  - `app.ingestion.pipeline.process_and_index`
-  - `app.core.bm25_index.rebuild_index`
 - Root `README.md` at workspace root was broken/outdated before this rewrite.
 - Alembic is configured, but the `alembic/versions/` directory does not contain generated migrations.
 - `scripts/bootstrap_index.py` is mostly a placeholder orchestration shell.
 - `scripts/seed_test_data.py` defines synthetic KB articles but currently only inserts incidents into Postgres.
 - `tests/unit/test_pii_anonymizer.py` contains an inline anonymizer implementation instead of importing the real module.
-- Chat endpoint currently falls back to a placeholder response path because it imports a nonexistent top-level `chat` function.
-- Async incident analysis task also falls back to placeholder logic because it imports a nonexistent top-level `analyze` function.
+- The new `app/ingestion/pipeline.py` bridge makes the historical-incident → Postgres → embedding/vector-store path much more runnable.
+- Worker and chat entrypoints now use the class-based `RAGPipeline`/retriever stack, but some docstrings/comments still describe older placeholder behavior.
+- pgvector filtering remains simpler than the richer Pinecone-style filter objects produced by the retriever.
 
 When documenting or running this project, assume it is a **strong implementation scaffold plus many real modules**, but not a completely production-wired system yet.
 
@@ -294,7 +290,9 @@ Important behavior:
 - `POST /api/v1/chat`
 - supports either internal incident UUID or ServiceNow sys_id
 - persists chat history in `chat_sessions`
-- currently falls back to placeholder response mode because the imported top-level RAG chat function does not exist
+- loads the latest stored `RecommendationDB` row for the incident before chatting
+- builds a `RecommendationResult` from stored data and calls `RAGPipeline.chat()`
+- returns 404 when no recommendation exists yet for the requested incident
 
 ### `app/models/`
 
@@ -491,6 +489,20 @@ Important note:
 - this module talks directly to the OpenAI embeddings API instead of reusing `app.core.embedder.Embedder`.
 - it is functional as a separate pipeline but overlaps conceptually with the core embedder abstraction.
 
+#### `app/ingestion/pipeline.py`
+
+High-level bridge module for historical incident persistence and vectorization.
+
+Provides:
+- `store_incident_record()`
+  - upserts an `IncidentRecord` into `IncidentDB`
+- `incident_db_to_record()`
+  - converts a stored database row back into the domain model
+- `process_and_index()`
+  - preprocesses a stored incident, chunks it, embeds it through `EmbeddingPipeline`, and upserts the resulting vectors
+
+This module is the clearest answer to “how do previous incidents get stored and vectorized?” in the current codebase.
+
 ### `app/core/`
 
 #### `app/core/embedder.py`
@@ -525,6 +537,7 @@ Capabilities:
 
 Important notes:
 - BM25 index is in-memory and must be rebuilt/populated explicitly.
+- dense retrieval now supports the project's async `VectorStore.query(...)` interface in addition to older sync query clients.
 - pgvector filter handling in the vector store expects simple equality filters; the retriever produces Pinecone-style `$in` filters, so pgvector filtering may not behave as intended without adaptation.
 
 #### `app/core/reranker.py`
@@ -597,7 +610,8 @@ Actual orchestration path inside `analyze_incident()`:
 10. emit audit event
 
 Important note:
-- this is implemented as a **class method flow**, but workers/routes sometimes try to import nonexistent top-level functions from this module.
+- this is implemented as a **class method flow** and is now used directly by the worker/chat integration instead of missing top-level helper functions.
+- recommendation persistence and audit logging occur when a real `db_session_factory` is supplied.
 
 #### `app/core/feedback_processor.py`
 
@@ -698,8 +712,10 @@ Celery tasks:
 
 Behavior:
 - wraps async logic in sync Celery task entrypoints
-- uses placeholder fallback recommendation flow because of missing top-level imports
-- can create stub incidents if an incident is missing from the DB
+- chooses `ServiceNowClient` when credentials exist and otherwise falls back to `MockServiceNowClient`
+- stores or refreshes incidents in Postgres via `store_incident_record()`
+- preprocesses incidents and runs `RAGPipeline.analyze_incident()` with a real session factory for persistence
+- indexes resolved tickets through `app.ingestion.pipeline.process_and_index()`
 
 #### `app/workers/reindex_worker.py`
 
@@ -710,8 +726,8 @@ Celery tasks:
 
 Behavior:
 - scans unindexed resolved incidents
-- tries to invoke missing ingestion pipeline helper, otherwise marks records indexed
-- rebuild task references nonexistent `app.core.bm25_index`
+- reuses `app.ingestion.pipeline.process_and_index()` for vector indexing
+- rebuilds BM25 through `HybridRetriever.rebuild_bm25_index()` using incident text loaded from Postgres
 - feedback processing updates `feedback_weights` based on recent ratings
 
 ## 5. ServiceNow assets
@@ -857,7 +873,7 @@ Given the current code wiring, the most reliable local path is:
 4. Start the API with Uvicorn.
 5. Open `/docs`, `/health`, and optionally `servicenow/widget/simulator.html`.
 6. Use endpoints that operate on existing seeded incidents.
-7. Expect placeholder/background behavior for some async RAG paths unless you wire the missing top-level helpers.
+7. Trigger analysis before chat so a stored recommendation exists, and use the worker/indexing paths for more realistic background execution.
 
 ## 9. Environment setup and configuration
 
@@ -964,10 +980,11 @@ The actual Python app lives in `genai-l2-assistant/`, not at the workspace root.
 
 Older markdown files describe the intended architecture, not always the exact current implementation.
 
-### 3. Python version mismatch in docs vs runtime
+### 3. Python version alignment
 
 - active project metadata is pinned to 3.14
 - implementation plan now says Python 3.14
+- CI runs on Python 3.14
 - Dockerfile and local `.venv` use 3.14
 
 Best practical choice for this repo as-is: **Python 3.14**.
@@ -984,21 +1001,21 @@ For local setup today, use:
 
 Although synthetic KB articles are declared, they are not stored in Postgres by the current seed path.
 
-### 6. Async analysis worker uses placeholder path
+### 6. Chat depends on an existing recommendation
 
-`app/workers/ingestion_worker.py` imports a nonexistent top-level `analyze` helper from `app.core.rag_pipeline`, so it falls back to placeholder recommendation logic.
+`app/api/routes/chat.py` now uses `RAGPipeline.chat()`, but it expects the incident to already have a stored `RecommendationDB` row.
 
-### 7. Chat endpoint uses placeholder path
+If no recommendation exists yet, the route returns 404 and you should analyze the incident first.
 
-`app/api/routes/chat.py` imports a nonexistent top-level `chat` helper from `app.core.rag_pipeline`, so it falls back to a placeholder assistant response.
+### 7. Worker/bootstrap maturity is uneven
 
-### 8. Reindex/BM25 worker references missing modules
+`app/workers/ingestion_worker.py` and `app/workers/reindex_worker.py` are now much more runnable, but `scripts/bootstrap_index.py` is still not the most reliable entrypoint for full historical indexing.
 
-`app/workers/reindex_worker.py` references:
-- `app.ingestion.pipeline`
-- `app.core.bm25_index`
+### 8. Reindex/BM25 worker now uses in-repo implementations
 
-Those modules are not present.
+`app/workers/reindex_worker.py` now uses `app.ingestion.pipeline.process_and_index()` and `HybridRetriever.rebuild_bm25_index()`.
+
+The remaining limitation is not missing modules; it is that BM25 state is still rebuilt in memory and provider-specific vector filtering still differs between Pinecone and pgvector.
 
 ### 9. `Makefile` may be less convenient on Windows
 
