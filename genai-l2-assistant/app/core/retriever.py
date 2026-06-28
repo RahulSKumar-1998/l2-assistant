@@ -7,6 +7,7 @@ with configurable filters, deduplication, and similar-incident lookup.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from datetime import datetime
 from enum import Enum
@@ -248,7 +249,34 @@ class HybridRetriever:
         results: list[RetrievedChunk] = []
 
         try:
-            # Pinecone-style interface
+            query_method = getattr(self._vector_store, "query", None)
+            if query_method is None:
+                return []
+
+            # Support the project's async VectorStore abstraction.
+            if inspect.iscoroutinefunction(query_method):
+                response = await query_method(
+                    vector=embedding,
+                    top_k=top_k,
+                    filter_metadata=filter_dict or None,
+                    include_metadata=True,
+                )
+
+                for match in response:
+                    metadata = getattr(match, "metadata", {}) or {}
+                    chunk = RetrievedChunk(
+                        chunk_id=getattr(match, "id", ""),
+                        chunk_text=metadata.get("chunk_text") or metadata.get("text") or "",
+                        chunk_type=ChunkType(metadata.get("chunk_type", "description")),
+                        source_id=metadata.get("source_id", ""),
+                        source_type=SourceType(metadata.get("source_type", "incident")),
+                        score=float(getattr(match, "score", 0.0)),
+                        metadata=metadata,
+                    )
+                    results.append(chunk)
+                return results
+
+            # Fallback for older synchronous Pinecone-style clients.
             query_kwargs: dict = {
                 "vector": embedding,
                 "top_k": top_k,
@@ -259,14 +287,14 @@ class HybridRetriever:
 
             response = await asyncio.get_running_loop().run_in_executor(
                 None,
-                lambda: self._vector_store.query(**query_kwargs),  # type: ignore[union-attr]
+                lambda: query_method(**query_kwargs),
             )
 
             for match in response.get("matches", []):
                 metadata = match.get("metadata", {})
                 chunk = RetrievedChunk(
                     chunk_id=match.get("id", ""),
-                    chunk_text=metadata.get("chunk_text", ""),
+                    chunk_text=metadata.get("chunk_text") or metadata.get("text") or "",
                     chunk_type=ChunkType(metadata.get("chunk_type", "description")),
                     source_id=metadata.get("source_id", ""),
                     source_type=SourceType(metadata.get("source_type", "incident")),

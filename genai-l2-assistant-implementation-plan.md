@@ -38,7 +38,7 @@ A Retrieval-Augmented Generation (RAG) powered assistant that:
 
 | Layer | Technology |
 |---|---|
-| Backend runtime | Python 3.11, FastAPI |
+| Backend runtime | Python 3.14, FastAPI |
 | LLM | Azure OpenAI GPT-4o / Anthropic Claude Sonnet |
 | Embedding model | `text-embedding-3-large` (OpenAI) or `BAAI/bge-large-en` |
 | Vector database | Pinecone (primary) / pgvector (fallback) |
@@ -58,7 +58,7 @@ A Retrieval-Augmented Generation (RAG) powered assistant that:
 
 ```
 Create a Python monorepo for a GenAI L2 Support Assistant with the following structure.
-Use Python 3.11. Include placeholder files with module docstrings.
+Use Python 3.14. Include placeholder files with module docstrings.
 
 genai-l2-assistant/
 ├── README.md

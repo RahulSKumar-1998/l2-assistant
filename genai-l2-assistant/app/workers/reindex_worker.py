@@ -76,12 +76,9 @@ async def _nightly_reindex_impl() -> dict[str, Any]:
         for incident in unindexed:
             processed += 1
             try:
-                # Attempt ingestion pipeline
-                try:
-                    from app.ingestion.pipeline import process_and_index  # type: ignore[import-not-found]
-                    await process_and_index(incident)
-                except ImportError:
-                    pass  # Pipeline not yet available
+                from app.ingestion.pipeline import process_and_index
+
+                await process_and_index(incident)
 
                 incident.is_indexed = True
                 indexed += 1
@@ -128,6 +125,8 @@ async def _rebuild_bm25_impl() -> dict[str, Any]:
     """
     from sqlalchemy import select
 
+    from app.core.embedder import Embedder
+    from app.core.retriever import HybridRetriever
     from app.storage.postgres import IncidentDB, get_db_session
 
     log = logger.bind(task="rebuild_bm25")
@@ -164,17 +163,22 @@ async def _rebuild_bm25_impl() -> dict[str, Any]:
                 text_parts.append(inc.root_cause)
 
             corpus.append({
-                "id": inc.snow_sys_id,
-                "text": " ".join(text_parts),
+                "chunk_id": inc.snow_sys_id,
+                "chunk_text": " ".join(text_parts),
+                "chunk_type": "description",
+                "source_id": inc.number,
+                "source_type": "incident",
+                "metadata": {
+                    "category": inc.category or "",
+                    "cmdb_ci": inc.cmdb_ci or "",
+                    "resolved_at": inc.resolved_at.isoformat() if inc.resolved_at else None,
+                    "resolution_notes": inc.resolution_notes or "",
+                },
             })
 
-        # Attempt to rebuild via the retriever module
-        try:
-            from app.core.bm25_index import rebuild_index  # type: ignore[import-not-found]
-            await rebuild_index(corpus)
-            log.info("bm25_index_rebuilt_successfully")
-        except ImportError:
-            log.info("bm25_index_module_not_available")
+        retriever = HybridRetriever(embedder=Embedder(), vector_store=None)
+        await retriever.rebuild_bm25_index(corpus)
+        log.info("bm25_index_rebuilt_successfully")
 
     log.info("bm25_rebuild_completed", documents=doc_count)
     return {

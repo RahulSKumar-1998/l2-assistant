@@ -6,9 +6,7 @@ Provides async task wrappers around the RAG pipeline for:
 """
 
 import asyncio
-import uuid as uuid_mod
-from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 from celery import Task
@@ -51,17 +49,31 @@ async def _run_analysis_pipeline(
         Dictionary with recommendation_id, status, and key metrics.
     """
     from app.config import get_settings
+    from app.core.context_assembler import ContextAssembler
+    from app.core.embedder import Embedder
+    from app.core.llm_client import LLMClient
+    from app.core.rag_pipeline import RAGPipeline
+    from app.core.reranker import Reranker
+    from app.core.retriever import HybridRetriever
+    from app.ingestion.mock_client import MockServiceNowClient
+    from app.ingestion.pipeline import store_incident_record
+    from app.ingestion.servicenow_client import ServiceNowClient
     from app.storage.postgres import (
         IncidentDB,
-        RecommendationDB,
         get_db_session,
+        get_session_factory,
     )
+    from app.storage.vector_store import get_vector_store
     from sqlalchemy import select
 
     log = logger.bind(snow_sys_id=snow_sys_id, engineer_id=engineer_id)
     log.info("analysis_pipeline_started")
 
     settings = get_settings()
+
+    # Choose a real ServiceNow client when credentials exist, otherwise use fixtures.
+    use_mock_client = not settings.servicenow.username and not settings.servicenow.client_id
+    snow_client_cls = MockServiceNowClient if use_mock_client else ServiceNowClient
 
     # Step 1: Look up or create the incident in our database
     async for session in get_db_session():
@@ -70,92 +82,57 @@ async def _run_analysis_pipeline(
         incident = result.scalar_one_or_none()
 
         if not incident:
-            # Attempt to fetch from ServiceNow and create the record
-            log.info("incident_not_in_db_creating_stub")
-            incident = IncidentDB(
-                id=uuid_mod.uuid4(),
-                snow_sys_id=snow_sys_id,
-                number=f"INC-{snow_sys_id[:8]}",
-                short_description="Pending analysis",
-                state="2",  # IN_PROGRESS
-            )
-            session.add(incident)
-            await session.flush()
+            log.info("incident_not_in_db_fetching_from_source", source="mock" if use_mock_client else "servicenow")
+            async with snow_client_cls() as snow_client:  # type: ignore[call-arg]
+                incident_record = await snow_client.get_incident(snow_sys_id)
+            incident = await store_incident_record(incident_record, session=session)
 
-        # Step 2: Attempt to run the RAG pipeline
+        # Refresh full current incident data if possible before analysis.
         try:
-            from app.core.rag_pipeline import analyze as rag_analyze  # type: ignore[import-not-found]
+            async with snow_client_cls() as snow_client:  # type: ignore[call-arg]
+                latest_record = await snow_client.get_incident(snow_sys_id)
+            incident = await store_incident_record(latest_record, session=session)
+        except Exception:
+            log.warning("incident_refresh_failed_using_db_copy", exc_info=True)
 
-            rag_result = await rag_analyze(incident=incident)
-            root_cause = rag_result.get("root_cause_prediction", "Analysis pending")
-            confidence = rag_result.get("confidence_score", 0.0)
-            triage_steps = rag_result.get("triage_steps", [])
-            similar_incidents = rag_result.get("similar_incidents", [])
-            kb_references = rag_result.get("kb_references", [])
-            resolution_draft = rag_result.get("resolution_draft", "")
-            retrieval_ms = rag_result.get("retrieval_latency_ms", 0)
-            generation_ms = rag_result.get("generation_latency_ms", 0)
-        except ImportError:
-            log.info("rag_pipeline_not_available_using_placeholder")
-            root_cause = (
-                f"Automated analysis for incident {incident.number}. "
-                f"RAG pipeline integration pending. "
-                f"Category: {incident.category or 'N/A'}."
-            )
-            confidence = 0.5
-            triage_steps = [
-                {
-                    "step": 1,
-                    "action": "Review incident description and work notes",
-                    "rationale": "Gather initial context about the issue",
-                },
-                {
-                    "step": 2,
-                    "action": "Check CMDB for impacted service dependencies",
-                    "rationale": "Identify potential upstream/downstream impacts",
-                },
-                {
-                    "step": 3,
-                    "action": "Search knowledge base for similar resolutions",
-                    "rationale": "Leverage historical resolution patterns",
-                },
-            ]
-            similar_incidents = []
-            kb_references = []
-            resolution_draft = ""
-            retrieval_ms = 0
-            generation_ms = 0
+        from app.ingestion.pipeline import incident_db_to_record
+        from app.ingestion.ticket_processor import TicketPreprocessor
 
-        # Step 3: Persist the recommendation
-        rec_id = uuid_mod.uuid4()
-        recommendation = RecommendationDB(
-            id=rec_id,
-            incident_id=incident.id,
-            root_cause_prediction=root_cause,
-            confidence_score=confidence,
-            triage_steps=triage_steps,
-            similar_incidents=similar_incidents,
-            kb_references=kb_references,
-            resolution_draft=resolution_draft,
-            retrieval_latency_ms=retrieval_ms,
-            generation_latency_ms=generation_ms,
+        vector_store = get_vector_store()
+        embedder = Embedder()
+        retriever = HybridRetriever(embedder=embedder, vector_store=vector_store)
+        reranker = Reranker()
+        context_assembler = ContextAssembler()
+        llm_client = LLMClient()
+        rag_pipeline = RAGPipeline(
+            embedder=embedder,
+            retriever=retriever,
+            reranker=reranker,
+            context_assembler=context_assembler,
+            llm_client=llm_client,
+            db_session_factory=get_session_factory(),
         )
-        session.add(recommendation)
-        await session.flush()
+
+        incident_record = incident_db_to_record(incident)
+        processed_ticket = TicketPreprocessor().preprocess(incident_record)
+        recommendation = await rag_pipeline.analyze_incident(
+            ticket=processed_ticket,
+            incident_db_id=incident.id,
+        )
 
         log.info(
             "analysis_pipeline_completed",
-            recommendation_id=str(rec_id),
-            confidence=confidence,
-            retrieval_ms=retrieval_ms,
-            generation_ms=generation_ms,
+            recommendation_id=str(recommendation.id),
+            confidence=recommendation.confidence_score,
+            retrieval_ms=recommendation.retrieval_latency_ms,
+            generation_ms=recommendation.generation_latency_ms,
         )
 
         return {
-            "recommendation_id": str(rec_id),
+            "recommendation_id": str(recommendation.id),
             "incident_id": str(incident.id),
             "status": "completed",
-            "confidence_score": confidence,
+            "confidence_score": recommendation.confidence_score,
         }
 
     return {"status": "error", "detail": "Failed to acquire database session"}
@@ -192,13 +169,9 @@ async def _index_ticket(snow_sys_id: str) -> dict[str, Any]:
             log.info("incident_already_indexed")
             return {"status": "skipped", "detail": "Already indexed"}
 
-        # Attempt to run the ingestion pipeline
-        try:
-            from app.ingestion.pipeline import process_and_index  # type: ignore[import-not-found]
+        from app.ingestion.pipeline import process_and_index
 
-            await process_and_index(incident)
-        except ImportError:
-            log.info("ingestion_pipeline_not_available_marking_indexed")
+        result = await process_and_index(incident)
 
         # Mark as indexed
         incident.is_indexed = True
@@ -209,6 +182,9 @@ async def _index_ticket(snow_sys_id: str) -> dict[str, Any]:
             "status": "indexed",
             "incident_number": incident.number,
             "snow_sys_id": snow_sys_id,
+            "total_chunks": result["total_chunks"],
+            "upserted_count": result["upserted_count"],
+            "failed_count": result["failed_count"],
         }
 
     return {"status": "error", "detail": "Failed to acquire database session"}

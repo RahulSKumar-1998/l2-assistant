@@ -69,7 +69,7 @@ RAG-powered AI assistant that helps L2 support engineers resolve ServiceNow inci
 
 | Tool | Version | Install |
 |------|---------|---------|
-| Python | 3.11+ | [python.org](https://www.python.org/downloads/) |
+| Python | 3.14 | [python.org](https://www.python.org/downloads/) |
 | Docker Desktop | Latest | [docker.com](https://www.docker.com/products/docker-desktop/) |
 | Git | Latest | [git-scm.com](https://git-scm.com/) |
 

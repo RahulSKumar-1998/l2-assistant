@@ -586,6 +586,32 @@ class PGVectorStore(VectorStore):
 
         if filter_metadata:
             for idx, (key, value) in enumerate(filter_metadata.items()):
+                if isinstance(value, dict):
+                    if "$in" in value:
+                        in_values = value["$in"] or []
+                        if not in_values:
+                            continue
+                        placeholders = []
+                        for item_idx, item in enumerate(in_values):
+                            param_name = f"meta_val_{idx}_{item_idx}"
+                            placeholders.append(f":{param_name}")
+                            params[param_name] = str(item)
+                        where_clauses.append(
+                            f"metadata->>'{key}' IN ({', '.join(placeholders)})"
+                        )
+                        continue
+
+                    if "$gte" in value:
+                        param_name = f"meta_val_{idx}"
+                        if key == "resolved_at":
+                            where_clauses.append(
+                                f"NULLIF(metadata->>'{key}', '')::timestamptz >= :{param_name}::timestamptz"
+                            )
+                        else:
+                            where_clauses.append(f"metadata->>'{key}' >= :{param_name}")
+                        params[param_name] = str(value["$gte"])
+                        continue
+
                 param_name = f"meta_val_{idx}"
                 where_clauses.append(f"metadata->>'{key}' = :{param_name}")
                 params[param_name] = str(value)

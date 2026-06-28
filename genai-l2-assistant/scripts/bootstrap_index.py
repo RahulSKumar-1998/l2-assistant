@@ -15,8 +15,20 @@ import asyncio
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import structlog
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.config import get_settings
+from app.ingestion.mock_client import MockServiceNowClient
+from app.ingestion.pipeline import process_and_index, store_incident_record
+from app.ingestion.servicenow_client import ServiceNowClient
+from app.models.incident import IncidentQueryParams, IncidentRecord
+from app.storage.postgres import get_session_factory
 
 logger = structlog.get_logger(__name__)
 
@@ -24,7 +36,9 @@ logger = structlog.get_logger(__name__)
 async def fetch_resolved_incidents(
     limit: int,
     offset: int = 0,
-) -> list[dict]:
+    *,
+    use_mock: bool = False,
+) -> list[IncidentRecord]:
     """Fetch resolved incidents from ServiceNow.
 
     Args:
@@ -34,14 +48,16 @@ async def fetch_resolved_incidents(
     Returns:
         List of incident records.
     """
-    # In production, this would use the ServiceNow client:
-    # from app.config import get_settings
-    # settings = get_settings()
-    # client = ServiceNowClient(settings.servicenow)
-    # params = IncidentQueryParams(state="6", limit=limit, offset=offset)
-    # return await client.list_incidents(params)
-    logger.info("fetch_resolved_incidents", limit=limit, offset=offset)
-    return []
+    logger.info(
+        "fetch_resolved_incidents",
+        limit=limit,
+        offset=offset,
+        source="mock" if use_mock else "servicenow",
+    )
+    client_cls = MockServiceNowClient if use_mock else ServiceNowClient
+    params = IncidentQueryParams(state="6", limit=limit, offset=offset)
+    async with client_cls() as client:  # type: ignore[call-arg]
+        return await client.list_incidents(params)
 
 
 async def fetch_kb_articles(limit: int, offset: int = 0) -> list[dict]:
@@ -54,59 +70,69 @@ async def fetch_kb_articles(limit: int, offset: int = 0) -> list[dict]:
     Returns:
         List of KB article records.
     """
-    logger.info("fetch_kb_articles", limit=limit, offset=offset)
+    logger.info(
+        "fetch_kb_articles_not_implemented",
+        limit=limit,
+        offset=offset,
+    )
     return []
 
 
-async def process_and_chunk(records: list[dict], record_type: str) -> list[dict]:
-    """Process records through the NLP pipeline and chunk for indexing.
+async def store_and_optionally_index(
+    incidents: list[IncidentRecord],
+    *,
+    dry_run: bool = False,
+    store_only: bool = False,
+) -> tuple[int, int]:
+    """Store incidents in PostgreSQL and optionally vectorize resolved ones.
 
     Args:
-        records: Raw records from ServiceNow.
-        record_type: "incident" or "kb_article".
+        incidents: ServiceNow-style incident records.
+        dry_run: If True, do not write to DB or vector store.
+        store_only: If True, skip embedding/vector upsert after DB persistence.
 
     Returns:
-        List of text chunks ready for embedding.
-    """
-    # In production, this would use the ticket processor:
-    # from app.ingestion.ticket_processor import TicketProcessor
-    # processor = TicketProcessor()
-    # chunks = []
-    # for record in records:
-    #     processed = processor.process(record)
-    #     chunks.extend(processor.chunk(processed))
-    # return chunks
-    logger.info("process_and_chunk", record_type=record_type, count=len(records))
-    return []
-
-
-async def index_chunks(chunks: list[dict], dry_run: bool = False) -> int:
-    """Index text chunks into the vector store.
-
-    Args:
-        chunks: Text chunks with embeddings to index.
-        dry_run: If True, skip actual indexing.
-
-    Returns:
-        Number of chunks indexed.
+        Tuple of (stored_count, indexed_count).
     """
     if dry_run:
-        logger.info("dry_run_index", chunk_count=len(chunks))
-        return len(chunks)
+        logger.info(
+            "dry_run_store_and_index",
+            incident_count=len(incidents),
+            store_only=store_only,
+        )
+        return len(incidents), 0 if store_only else len(incidents)
 
-    # In production:
-    # from app.core.vector_store import VectorStore
-    # store = VectorStore(get_settings().vector_store)
-    # result = await store.upsert(chunks)
-    # return result["upserted_count"]
-    logger.info("index_chunks", chunk_count=len(chunks))
-    return len(chunks)
+    session_factory = get_session_factory()
+    stored_count = 0
+    indexed_count = 0
+
+    async with session_factory() as session:
+        for incident_record in incidents:
+            incident_db = await store_incident_record(incident_record, session=session)
+            stored_count += 1
+
+            if not store_only:
+                result = await process_and_index(incident_db)
+                if int(result["upserted_count"]) > 0 and int(result["failed_count"]) == 0:
+                    indexed_count += 1
+
+        await session.commit()
+
+    logger.info(
+        "store_and_index_batch_completed",
+        stored_count=stored_count,
+        indexed_count=indexed_count,
+        store_only=store_only,
+    )
+    return stored_count, indexed_count
 
 
 async def bootstrap(
     batch_size: int = 100,
     limit: int = 0,
     dry_run: bool = False,
+    store_only: bool = False,
+    use_mock: bool = False,
 ) -> None:
     """Run the bootstrap indexing pipeline.
 
@@ -124,6 +150,8 @@ async def bootstrap(
         batch_size=batch_size,
         limit=limit or "unlimited",
         dry_run=dry_run,
+        store_only=store_only,
+        use_mock=use_mock,
     )
 
     # ── Phase 1: Index resolved incidents ────────────────────────────────
@@ -140,15 +168,20 @@ async def bootstrap(
             current_limit = min(batch_size, remaining)
 
         incidents = await fetch_resolved_incidents(
-            limit=current_limit, offset=offset
+            limit=current_limit,
+            offset=offset,
+            use_mock=use_mock,
         )
 
         if not incidents:
             break
 
         try:
-            chunks = await process_and_chunk(incidents, "incident")
-            indexed = await index_chunks(chunks, dry_run=dry_run)
+            _, indexed = await store_and_optionally_index(
+                incidents,
+                dry_run=dry_run,
+                store_only=store_only,
+            )
             total_indexed += indexed
             incident_count += len(incidents)
         except Exception as e:
@@ -179,7 +212,7 @@ async def bootstrap(
                 rate=f"{rate:.1f} records/sec",
             )
 
-    # ── Phase 2: Index KB articles ───────────────────────────────────────
+    # ── Phase 2: KB articles (still optional / not yet wired here) ──────
     logger.info("phase_2_start", phase="kb_articles")
     offset = 0
     kb_count = 0
@@ -190,14 +223,7 @@ async def bootstrap(
         if not articles:
             break
 
-        try:
-            chunks = await process_and_chunk(articles, "kb_article")
-            indexed = await index_chunks(chunks, dry_run=dry_run)
-            total_indexed += indexed
-            kb_count += len(articles)
-        except Exception as e:
-            total_errors += len(articles)
-            logger.error("batch_error", error=str(e), offset=offset)
+        kb_count += len(articles)
 
         offset += len(articles)
 
@@ -226,6 +252,8 @@ def main() -> None:
 Examples:
   python scripts/bootstrap_index.py                    # Index all resolved incidents
   python scripts/bootstrap_index.py --dry-run          # Validate without writing
+  python scripts/bootstrap_index.py --store-only       # Persist incidents without vectorization
+  python scripts/bootstrap_index.py --use-mock         # Load fixture incidents locally
   python scripts/bootstrap_index.py --batch-size 50    # Process 50 records at a time
   python scripts/bootstrap_index.py --limit 1000       # Index at most 1000 incidents
         """,
@@ -248,6 +276,18 @@ Examples:
         default=0,
         help="Maximum total records to process (0 = unlimited)",
     )
+    parser.add_argument(
+        "--store-only",
+        action="store_true",
+        default=False,
+        help="Persist incidents to PostgreSQL but skip embedding/vector indexing",
+    )
+    parser.add_argument(
+        "--use-mock",
+        action="store_true",
+        default=False,
+        help="Use the bundled mock ServiceNow client instead of a live instance",
+    )
 
     args = parser.parse_args()
 
@@ -256,6 +296,8 @@ Examples:
         dry_run=args.dry_run,
         batch_size=args.batch_size,
         limit=args.limit,
+        store_only=args.store_only,
+        use_mock=args.use_mock,
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -264,6 +306,8 @@ Examples:
             batch_size=args.batch_size,
             limit=args.limit,
             dry_run=args.dry_run,
+            store_only=args.store_only,
+            use_mock=args.use_mock,
         )
     )
 

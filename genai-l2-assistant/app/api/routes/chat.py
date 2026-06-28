@@ -12,12 +12,21 @@ import structlog
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
+from app.core.context_assembler import ContextAssembler
+from app.core.embedder import Embedder
+from app.core.llm_client import LLMClient
+from app.core.rag_pipeline import RAGPipeline
+from app.core.reranker import Reranker
+from app.core.retriever import HybridRetriever
 from app.models.chat import ChatMessage, ChatRequest, ChatResponse
+from app.models.recommendation import RecommendationResult
 from app.storage.postgres import (
     ChatSessionDB,
     IncidentDB,
+    RecommendationDB,
     get_db_session,
 )
+from app.storage.vector_store import get_vector_store
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = structlog.get_logger(__name__)
@@ -64,7 +73,7 @@ async def _get_or_create_session(
 
 
 async def _run_chat_pipeline(
-    incident: IncidentDB,
+    recommendation: RecommendationResult,
     message: str,
     history: list[dict[str, Any]],
 ) -> tuple[str, list[str]]:
@@ -75,50 +84,43 @@ async def _run_chat_pipeline(
     RAG pipeline modules will implement.
 
     Args:
-        incident: The incident database record.
+        recommendation: The stored recommendation context to chat about.
         message: The user's chat message.
         history: Previous messages in the session for context.
 
     Returns:
         Tuple of (response_text, source_ids).
     """
-    # Build context from incident data
-    context_parts: list[str] = [
-        f"Incident: {incident.number}",
-        f"Description: {incident.short_description}",
-        f"Category: {incident.category}",
-        f"Priority: {incident.priority}",
+    vector_store = get_vector_store()
+    embedder = Embedder()
+    retriever = HybridRetriever(embedder=embedder, vector_store=vector_store)
+    reranker = Reranker()
+    context_assembler = ContextAssembler()
+    llm_client = LLMClient()
+    rag_pipeline = RAGPipeline(
+        embedder=embedder,
+        retriever=retriever,
+        reranker=reranker,
+        context_assembler=context_assembler,
+        llm_client=llm_client,
+        db_session_factory=None,
+    )
+
+    chat_messages = [
+        ChatMessage(
+            role=entry.get("role", "user"),
+            content=entry.get("content", ""),
+            sources=entry.get("sources", []) or [],
+        )
+        for entry in history[:-1]
     ]
-    if incident.resolution_notes:
-        context_parts.append(f"Resolution: {incident.resolution_notes}")
 
-    # The RAG pipeline will be integrated here.
-    # For now, return a structured response indicating the pipeline
-    # needs the full RAG modules (retriever, LLM client) to be wired in.
-    try:
-        # Attempt to import and use the RAG pipeline if available
-        from app.core.rag_pipeline import chat as rag_chat  # type: ignore[import-not-found]
-
-        response_text, sources = await rag_chat(
-            incident_context="\n".join(context_parts),
-            user_message=message,
-            chat_history=history,
-        )
-        return response_text, sources
-    except ImportError:
-        # RAG pipeline not yet implemented — return informative placeholder
-        logger.info(
-            "rag_pipeline_not_available",
-            incident_number=incident.number,
-        )
-        return (
-            f"I'm the L2 Support Assistant analyzing incident {incident.number}. "
-            f"The full RAG pipeline is being integrated. "
-            f"Incident details: {incident.short_description or 'N/A'}. "
-            f"Category: {incident.category or 'N/A'}. "
-            f"Please check back once the RAG pipeline modules are deployed.",
-            [],
-        )
+    response_text = await rag_pipeline.chat(
+        message=message,
+        recommendation=recommendation,
+        history=chat_messages,
+    )
+    return response_text, recommendation.sources_used
 
 
 @router.post(
@@ -176,9 +178,40 @@ async def chat(body: ChatRequest) -> ChatResponse:
                 detail=f"Incident {body.incident_id} not found",
             )
 
+        rec_stmt = (
+            select(RecommendationDB)
+            .where(RecommendationDB.incident_id == incident.id)
+            .order_by(RecommendationDB.created_at.desc())
+            .limit(1)
+        )
+        rec_result = await session.execute(rec_stmt)
+        recommendation_db = rec_result.scalar_one_or_none()
+
+        if recommendation_db is None:
+            log.warning("recommendation_not_found_for_chat")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No recommendation found for incident {body.incident_id}",
+            )
+
         # Get or create chat session
         chat_session = await _get_or_create_session(
             session, incident.id, body.engineer_id, body.session_id
+        )
+
+        recommendation = RecommendationResult(
+            id=recommendation_db.id,
+            incident_id=recommendation_db.incident_id,
+            snow_sys_id=incident.snow_sys_id,
+            root_cause_prediction=recommendation_db.root_cause_prediction,
+            confidence_score=recommendation_db.confidence_score,
+            triage_steps=recommendation_db.triage_steps or [],
+            similar_incidents=recommendation_db.similar_incidents or [],
+            kb_references=recommendation_db.kb_references or [],
+            resolution_draft=recommendation_db.resolution_draft or "",
+            retrieval_latency_ms=recommendation_db.retrieval_latency_ms or 0,
+            generation_latency_ms=recommendation_db.generation_latency_ms or 0,
+            created_at=recommendation_db.created_at,
         )
 
         # Reconstruct history from stored messages
@@ -195,7 +228,7 @@ async def chat(body: ChatRequest) -> ChatResponse:
         # Run RAG pipeline
         try:
             response_text, sources = await _run_chat_pipeline(
-                incident, body.message, history
+                recommendation, body.message, history
             )
         except Exception as exc:
             log.error("chat_pipeline_failed", error=str(exc), exc_info=True)
