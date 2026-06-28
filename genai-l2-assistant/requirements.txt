@@ -1,0 +1,44 @@
+# ============================================================================
+# GenAI L2 Support Assistant — Python Dependencies
+# ============================================================================
+# Generated from pyproject.toml. Install with: pip install -r requirements.txt
+# For development deps, also install: pip install -r requirements-dev.txt
+# ============================================================================
+
+# -- Web Framework -----------------------------------------------------------
+fastapi>=0.111
+uvicorn[standard]>=0.29
+pydantic>=2.0,<3.0
+pydantic-settings>=2.0,<3.0
+
+# -- LLM & AI ---------------------------------------------------------------
+openai>=1.0,<2.0
+anthropic>=0.28,<1.0
+
+# -- Vector Stores -----------------------------------------------------------
+pinecone-client>=3.0,<4.0
+pgvector>=0.2,<0.3
+
+# -- Database ----------------------------------------------------------------
+sqlalchemy[asyncio]>=2.0,<3.0
+asyncpg>=0.29
+alembic>=1.13,<2.0
+
+# -- Task Queue --------------------------------------------------------------
+celery[redis]>=5.0,<6.0
+redis>=5.0,<6.0
+
+# -- NLP ---------------------------------------------------------------------
+rank-bm25>=0.2,<0.3
+sentence-transformers>=2.0,<3.0
+
+# -- HTTP & Utilities --------------------------------------------------------
+httpx>=0.27
+tenacity>=8.0,<9.0
+tiktoken>=0.7,<1.0
+numpy>=1.24,<3.0
+
+# -- Logging & Monitoring ----------------------------------------------------
+structlog>=24.0,<25.0
+prometheus-client>=0.20,<1.0
+prometheus-fastapi-instrumentator>=6.0,<7.0

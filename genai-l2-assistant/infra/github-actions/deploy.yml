@@ -1,0 +1,179 @@
+name: CD — Build & Deploy
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deployment environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging'
+      || startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: staging
+      url: https://staging-l2-assistant.internal.company.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: "v1.28.0"
+
+      - name: Configure kubeconfig
+        run: |
+          echo "${{ secrets.STAGING_KUBECONFIG }}" | base64 -d > /tmp/kubeconfig
+          echo "KUBECONFIG=/tmp/kubeconfig" >> $GITHUB_ENV
+
+      - name: Deploy to staging
+        run: |
+          # Update image in deployment
+          kubectl set image deploy/l2-assistant-api \
+            l2-assistant-api=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::7} \
+            -n l2-assistant
+
+          # Wait for rollout
+          kubectl rollout status deploy/l2-assistant-api \
+            -n l2-assistant --timeout=300s
+
+      - name: Run smoke tests
+        run: |
+          STAGING_URL="https://staging-l2-assistant.internal.company.com"
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/health")
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "❌ Health check failed with status $HTTP_STATUS"
+            exit 1
+          fi
+          echo "✅ Health check passed"
+
+      - name: Run database migrations
+        run: |
+          kubectl exec deploy/l2-assistant-api -n l2-assistant -- \
+            alembic upgrade head
+
+  deploy-production:
+    name: Deploy to Production
+    needs: [build-and-push, deploy-staging]
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'
+      || startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: production
+      url: https://l2-assistant.internal.company.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: "v1.28.0"
+
+      - name: Configure kubeconfig
+        run: |
+          echo "${{ secrets.PROD_KUBECONFIG }}" | base64 -d > /tmp/kubeconfig
+          echo "KUBECONFIG=/tmp/kubeconfig" >> $GITHUB_ENV
+
+      - name: Deploy to production
+        run: |
+          kubectl set image deploy/l2-assistant-api \
+            l2-assistant-api=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::7} \
+            -n l2-assistant
+
+          kubectl rollout status deploy/l2-assistant-api \
+            -n l2-assistant --timeout=300s
+
+      - name: Run database migrations
+        run: |
+          kubectl exec deploy/l2-assistant-api -n l2-assistant -- \
+            alembic upgrade head
+
+      - name: Post-deploy health check
+        run: |
+          PROD_URL="https://l2-assistant.internal.company.com"
+          for i in {1..5}; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$PROD_URL/health")
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "✅ Health check passed (attempt $i)"
+              exit 0
+            fi
+            echo "⏳ Health check attempt $i: status $HTTP_STATUS"
+            sleep 10
+          done
+          echo "❌ Health check failed after 5 attempts"
+          exit 1
+
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "🚀 Production deployment successful"
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::7}"
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "⚠️ Deployment failed, rolling back..."
+          kubectl rollout undo deploy/l2-assistant-api -n l2-assistant
+          kubectl rollout status deploy/l2-assistant-api -n l2-assistant --timeout=300s

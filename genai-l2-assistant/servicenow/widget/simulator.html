@@ -1,0 +1,1818 @@
+<!DOCTYPE html>
+<!--
+  ══════════════════════════════════════════════════════════════════════════════
+  GenAI L2 Support Assistant — Local Development Simulator
+  ══════════════════════════════════════════════════════════════════════════════
+
+  USAGE:
+    1. Open this file directly in a browser (no build step required).
+    2. Toggle "Mock Mode" ON to use fixture data without a backend.
+    3. Toggle "Mock Mode" OFF to connect to your FastAPI server at
+       http://localhost:8000/api/v1/
+
+  FEATURES:
+    ✓ Left panel: simulated ServiceNow incident form (pre-populated P1)
+    ✓ Right panel: full AI sidebar widget with all interactions
+    ✓ Mock Mode toggle with complete fixture data
+    ✓ Working chat, feedback, copy-to-clipboard
+    ✓ Dark glassmorphism theme with Inter font
+    ✓ Responsive at 1280px and 1440px viewports
+
+  NO EXTERNAL DEPENDENCIES (except Google Fonts CDN for Inter/JetBrains Mono).
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GenAI L2 Assistant — Dev Simulator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ═══════════════════════════════════════════════════════════════════════
+       RESET & BASE
+       ═══════════════════════════════════════════════════════════════════════ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      /* Core palette */
+      --bg-base:       #0b0d11;
+      --bg-surface:    #12151c;
+      --bg-elevated:   #1a1e28;
+      --bg-card:       #1e2230;
+      --bg-input:      #252a38;
+      --bg-glass:      rgba(26, 30, 40, 0.65);
+      --border:        rgba(255,255,255,0.06);
+      --border-strong: rgba(255,255,255,0.10);
+
+      /* Text */
+      --text-primary:   #eaecf0;
+      --text-secondary: #94a3b8;
+      --text-muted:     #5e6a7e;
+
+      /* Accent */
+      --accent:       #6366f1;
+      --accent-light: #818cf8;
+      --accent-glow:  rgba(99,102,241,0.25);
+
+      /* Status */
+      --green:  #34d399;
+      --amber:  #fbbf24;
+      --red:    #f87171;
+
+      /* Spacing */
+      --radius:    12px;
+      --radius-sm: 8px;
+      --radius-xs: 6px;
+
+      /* Font */
+      --font:      'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    }
+
+    html {
+      font-size: 14px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg-base);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Ambient background glow */
+    body::before {
+      content: '';
+      position: fixed;
+      top: -40%;
+      left: -20%;
+      width: 80%;
+      height: 80%;
+      background: radial-gradient(ellipse, rgba(99,102,241,0.06) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    body::after {
+      content: '';
+      position: fixed;
+      bottom: -30%;
+      right: -15%;
+      width: 60%;
+      height: 60%;
+      background: radial-gradient(ellipse, rgba(52,211,153,0.04) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       TOP BAR
+       ═══════════════════════════════════════════════════════════════════════ */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      height: 52px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(24px) saturate(1.4);
+      -webkit-backdrop-filter: blur(24px) saturate(1.4);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .topbar__brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 600;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }
+
+    .topbar__logo {
+      width: 28px; height: 28px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent) 0%, #a855f7 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; color: #fff; font-weight: 700;
+    }
+
+    .topbar__controls {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .topbar__env-badge {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 3px 10px;
+      border-radius: 10px;
+      background: rgba(251,191,36,0.12);
+      color: var(--amber);
+      border: 1px solid rgba(251,191,36,0.2);
+    }
+
+    /* Toggle switch */
+    .toggle-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .toggle {
+      position: relative;
+      width: 40px; height: 22px;
+      background: var(--bg-input);
+      border-radius: 11px;
+      cursor: pointer;
+      border: 1px solid var(--border-strong);
+      transition: background 0.25s, border-color 0.25s;
+    }
+
+    .toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      transition: transform 0.25s cubic-bezier(0.4,0,0.2,1), background 0.25s;
+    }
+
+    .toggle.active {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .toggle.active::after {
+      transform: translateX(18px);
+      background: #fff;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       LAYOUT
+       ═══════════════════════════════════════════════════════════════════════ */
+    .app-layout {
+      display: grid;
+      grid-template-columns: 1fr 420px;
+      height: calc(100vh - 52px);
+      position: relative;
+      z-index: 1;
+    }
+
+    @media (max-width: 1100px) {
+      .app-layout { grid-template-columns: 1fr 380px; }
+    }
+
+    @media (min-width: 1440px) {
+      .app-layout { grid-template-columns: 1fr 460px; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       LEFT PANEL — INCIDENT FORM
+       ═══════════════════════════════════════════════════════════════════════ */
+    .form-panel {
+      padding: 28px 32px;
+      overflow-y: auto;
+      border-right: 1px solid var(--border);
+    }
+
+    .form-panel::-webkit-scrollbar { width: 6px; }
+    .form-panel::-webkit-scrollbar-track { background: transparent; }
+    .form-panel::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+
+    .form-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+    }
+
+    .form-header__title {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+
+    .form-header__number {
+      color: var(--accent-light);
+    }
+
+    .priority-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 4px 12px;
+      border-radius: 10px;
+    }
+
+    .priority-badge--p1 {
+      background: rgba(248,113,113,0.12);
+      color: var(--red);
+      border: 1px solid rgba(248,113,113,0.2);
+    }
+
+    .priority-badge--p1::before {
+      content: '';
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--red);
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.5; transform: scale(0.8); }
+    }
+
+    /* Form fields */
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px 24px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .form-group--wide {
+      grid-column: 1 / -1;
+    }
+
+    .form-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+    }
+
+    .form-input,
+    .form-select,
+    .form-textarea {
+      background: var(--bg-input);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-xs);
+      color: var(--text-primary);
+      font-family: var(--font);
+      font-size: 13px;
+      padding: 9px 12px;
+      transition: border-color 0.2s;
+    }
+
+    .form-input:focus,
+    .form-select:focus,
+    .form-textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .form-textarea {
+      resize: vertical;
+      line-height: 1.6;
+    }
+
+    .form-select {
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%235e6a7e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      padding-right: 32px;
+    }
+
+    /* Work notes area */
+    .work-notes-area {
+      margin-top: 24px;
+    }
+
+    .work-notes-area h3 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 10px;
+      color: var(--text-secondary);
+    }
+
+    .work-notes-display {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 14px 16px;
+      min-height: 80px;
+      font-size: 13px;
+      line-height: 1.7;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       RIGHT PANEL — AI SIDEBAR
+       ═══════════════════════════════════════════════════════════════════════ */
+    .sidebar-panel {
+      background: var(--bg-surface);
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-panel::-webkit-scrollbar { width: 5px; }
+    .sidebar-panel::-webkit-scrollbar-track { background: transparent; }
+    .sidebar-panel::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+
+    /* Sidebar header */
+    .sidebar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .sidebar-header__left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .sidebar-header__icon {
+      width: 24px; height: 24px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, var(--accent) 0%, #a855f7 100%);
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    .sidebar-header__icon svg { width: 14px; height: 14px; fill: #fff; }
+
+    .sidebar-header__title {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    /* Status badges */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 3px 10px;
+      border-radius: 10px;
+    }
+
+    .status-badge__dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+    }
+
+    .status-badge--analysing {
+      background: rgba(99,102,241,0.12);
+      color: var(--accent-light);
+    }
+    .status-badge--analysing .status-badge__dot {
+      background: var(--accent-light);
+      animation: pulse 1.5s infinite;
+    }
+
+    .status-badge--ready {
+      background: rgba(52,211,153,0.12);
+      color: var(--green);
+    }
+    .status-badge--ready .status-badge__dot {
+      background: var(--green);
+    }
+
+    .status-badge--low {
+      background: rgba(248,113,113,0.12);
+      color: var(--red);
+    }
+    .status-badge--low .status-badge__dot {
+      background: var(--red);
+      animation: pulse 1.5s infinite;
+    }
+
+    /* Section containers */
+    .sidebar-section {
+      padding: 18px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar-section:last-child { border-bottom: none; }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+
+    .section-title svg {
+      width: 14px; height: 14px;
+      fill: var(--accent-light);
+      flex-shrink: 0;
+    }
+
+    .section-title__count {
+      font-weight: 400;
+      color: var(--text-muted);
+      margin-left: 2px;
+    }
+
+    /* ── Root Cause ─────────────────────────────────────────────────── */
+    .root-cause-text {
+      font-size: 13px;
+      line-height: 1.7;
+      margin-bottom: 14px;
+      color: var(--text-primary);
+    }
+
+    .root-cause-text strong {
+      font-weight: 600;
+    }
+
+    .confidence-bar {
+      margin-bottom: 6px;
+    }
+
+    .confidence-bar__header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 5px;
+    }
+
+    .confidence-bar__value { font-weight: 600; }
+
+    .confidence-bar__track {
+      height: 5px;
+      background: var(--bg-input);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .confidence-bar__fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.8s cubic-bezier(0.4,0,0.2,1);
+    }
+
+    .confidence-bar__fill--green { background: linear-gradient(90deg, #10b981, #34d399); }
+    .confidence-bar__fill--amber { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+    .confidence-bar__fill--red   { background: linear-gradient(90deg, #ef4444, #f87171); }
+
+    .warning-banner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      margin-top: 10px;
+      background: rgba(248,113,113,0.08);
+      border: 1px solid rgba(248,113,113,0.18);
+      border-radius: var(--radius-xs);
+      color: var(--red);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .warning-banner svg { width: 14px; height: 14px; fill: var(--red); flex-shrink: 0; }
+
+    /* ── Triage Steps ──────────────────────────────────────────────── */
+    .step-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .step-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      transition: border-color 0.2s, opacity 0.3s;
+    }
+
+    .step-card.completed {
+      opacity: 0.45;
+      border-color: var(--green);
+    }
+
+    .step-card__header {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .step-checkbox {
+      appearance: none;
+      width: 16px; height: 16px;
+      border: 1.5px solid var(--border-strong);
+      border-radius: 4px;
+      background: var(--bg-input);
+      cursor: pointer;
+      flex-shrink: 0;
+      margin-top: 1px;
+      transition: background 0.2s, border-color 0.2s;
+    }
+
+    .step-checkbox:checked {
+      background: var(--accent);
+      border-color: var(--accent);
+      background-image: url("data:image/svg+xml,%3Csvg width='10' height='8' viewBox='0 0 10 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 4L3.5 6.5L9 1' stroke='white' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: center;
+    }
+
+    .step-number {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+
+    .step-action {
+      flex: 1;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .step-expand-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 2px;
+      transition: transform 0.2s;
+      flex-shrink: 0;
+    }
+
+    .step-expand-btn.open { transform: rotate(180deg); }
+
+    .step-expand-btn svg { width: 14px; height: 14px; fill: currentColor; }
+
+    .step-rationale {
+      margin: 10px 0 0 46px;
+      padding: 9px 12px;
+      background: var(--bg-input);
+      border-radius: var(--radius-xs);
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.7;
+      animation: slideDown 0.2s ease;
+    }
+
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .step-command {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 8px 0 0 46px;
+      padding: 8px 12px;
+      background: #0d0f14;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xs);
+    }
+
+    .step-command code {
+      flex: 1;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--green);
+      word-break: break-all;
+    }
+
+    .copy-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 3px;
+      transition: color 0.2s;
+    }
+
+    .copy-btn:hover { color: var(--text-primary); }
+    .copy-btn svg { width: 14px; height: 14px; fill: currentColor; }
+
+    /* ── Similar Incidents ──────────────────────────────────────────── */
+    .incident-cards {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .incident-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      transition: border-color 0.2s, transform 0.15s;
+    }
+
+    .incident-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+
+    .incident-card__top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 5px;
+    }
+
+    .incident-card__number {
+      color: var(--accent-light);
+      font-weight: 600;
+      font-size: 13px;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .incident-card__number:hover { text-decoration: underline; }
+
+    .similarity-pill {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 9px;
+      border-radius: 10px;
+      background: rgba(99,102,241,0.1);
+      color: var(--accent-light);
+    }
+
+    .incident-card__summary {
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+    }
+
+    .incident-card__time {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .incident-card__time svg { width: 11px; height: 11px; fill: currentColor; }
+
+    /* ── KB References ──────────────────────────────────────────────── */
+    .kb-list {
+      list-style: none;
+    }
+
+    .kb-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .kb-item:last-child { border-bottom: none; }
+
+    .kb-link {
+      color: var(--accent-light);
+      text-decoration: none;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .kb-link:hover { text-decoration: underline; }
+
+    .kb-score {
+      font-size: 11px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    /* ── Resolution Draft ──────────────────────────────────────────── */
+    .resolution-textarea {
+      width: 100%;
+      background: var(--bg-input);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-xs);
+      color: var(--text-primary);
+      font-family: var(--font);
+      font-size: 13px;
+      padding: 10px 12px;
+      line-height: 1.7;
+      resize: vertical;
+      margin-bottom: 10px;
+      transition: border-color 0.2s;
+    }
+
+    .resolution-textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    /* ── Buttons (shared) ──────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: none;
+      border-radius: var(--radius-xs);
+      cursor: pointer;
+      font-family: var(--font);
+      font-weight: 500;
+      transition: background 0.2s, transform 0.1s;
+    }
+
+    .btn:active { transform: scale(0.97); }
+
+    .btn--primary {
+      background: var(--accent);
+      color: #fff;
+      padding: 9px 16px;
+      font-size: 12px;
+    }
+
+    .btn--primary:hover { background: var(--accent-light); }
+
+    .btn--ghost {
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      padding: 7px 12px;
+      font-size: 12px;
+      border: 1px solid var(--border-strong);
+    }
+
+    .btn--ghost:hover { background: var(--bg-input); color: var(--text-primary); }
+
+    .btn svg { width: 14px; height: 14px; fill: currentColor; }
+
+    /* ── Chat ───────────────────────────────────────────────────────── */
+    .chat-history {
+      max-height: 220px;
+      overflow-y: auto;
+      margin-bottom: 12px;
+      padding-right: 4px;
+    }
+
+    .chat-history::-webkit-scrollbar { width: 4px; }
+    .chat-history::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
+
+    .chat-msg {
+      padding: 9px 12px;
+      border-radius: var(--radius-xs);
+      margin-bottom: 6px;
+      animation: slideDown 0.2s ease;
+    }
+
+    .chat-msg--user {
+      background: rgba(99,102,241,0.08);
+      border: 1px solid rgba(99,102,241,0.15);
+    }
+
+    .chat-msg--assistant {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+    }
+
+    .chat-msg__role {
+      display: block;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 3px;
+    }
+
+    .chat-msg__text {
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .prompt-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .pill {
+      background: var(--bg-card);
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-family: var(--font);
+      font-size: 11px;
+      padding: 5px 13px;
+      transition: all 0.2s;
+    }
+
+    .pill:hover {
+      background: rgba(99,102,241,0.08);
+      border-color: var(--accent);
+      color: var(--accent-light);
+    }
+
+    .chat-input-row {
+      display: flex;
+      gap: 6px;
+    }
+
+    .chat-input {
+      flex: 1;
+      background: var(--bg-input);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-xs);
+      color: var(--text-primary);
+      font-family: var(--font);
+      font-size: 13px;
+      padding: 9px 12px;
+      transition: border-color 0.2s;
+    }
+
+    .chat-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .chat-input::placeholder { color: var(--text-muted); }
+
+    .btn--send {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-xs);
+      padding: 9px 10px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .btn--send:hover { background: var(--accent-light); }
+    .btn--send:disabled { opacity: 0.35; cursor: not-allowed; }
+    .btn--send svg { width: 16px; height: 16px; fill: currentColor; }
+
+    /* ── Feedback ───────────────────────────────────────────────────── */
+    .feedback-section { text-align: center; }
+
+    .feedback-section .section-title {
+      justify-content: center;
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 13px;
+    }
+
+    .feedback-row {
+      display: flex;
+      justify-content: center;
+      gap: 18px;
+      margin-bottom: 10px;
+    }
+
+    .feedback-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border-strong);
+      border-radius: 50%;
+      width: 42px; height: 42px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      color: var(--text-muted);
+      transition: all 0.2s;
+    }
+
+    .feedback-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent-light);
+      transform: scale(1.08);
+    }
+
+    .feedback-btn.active {
+      background: rgba(99,102,241,0.12);
+      border-color: var(--accent);
+      color: var(--accent-light);
+    }
+
+    .feedback-btn svg { width: 20px; height: 20px; fill: currentColor; }
+
+    .feedback-comment {
+      margin-top: 8px;
+    }
+
+    .feedback-textarea {
+      width: 100%;
+      background: var(--bg-input);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-xs);
+      color: var(--text-primary);
+      font-family: var(--font);
+      font-size: 12px;
+      padding: 8px 10px;
+      resize: vertical;
+      margin-bottom: 6px;
+    }
+
+    .feedback-textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .feedback-thanks {
+      font-size: 12px;
+      color: var(--green);
+      margin-top: 6px;
+    }
+
+    /* ── Loading State ──────────────────────────────────────────────── */
+    .loader {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 64px 18px;
+      gap: 18px;
+    }
+
+    .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid var(--border-strong);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loader__text {
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+
+    /* ── Toast ──────────────────────────────────────────────────────── */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      padding: 10px 18px;
+      font-size: 13px;
+      color: var(--text-primary);
+      z-index: 9999;
+      animation: toastIn 0.3s ease, toastOut 0.3s ease 2.2s forwards;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes toastOut {
+      from { opacity: 1; transform: translateY(0); }
+      to   { opacity: 0; transform: translateY(12px); }
+    }
+
+    /* ── Utilities ─────────────────────────────────────────────────── */
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <!-- ═══════ TOP BAR ═══════ -->
+  <div class="topbar">
+    <div class="topbar__brand">
+      <div class="topbar__logo">G</div>
+      <span>GenAI L2 Assistant</span>
+    </div>
+    <div class="topbar__controls">
+      <span class="topbar__env-badge">Dev Simulator</span>
+      <div class="toggle-wrap">
+        <span>Mock Mode</span>
+        <div class="toggle active" id="mockToggle" onclick="toggleMockMode()" title="Toggle between mock fixture data and live FastAPI backend"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ MAIN LAYOUT ═══════ -->
+  <div class="app-layout">
+
+    <!-- ─── LEFT: INCIDENT FORM ─── -->
+    <div class="form-panel">
+      <div class="form-header">
+        <h1 class="form-header__title">
+          Incident <span class="form-header__number">INC0042871</span>
+        </h1>
+        <span class="priority-badge priority-badge--p1">P1 — Critical</span>
+      </div>
+
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Number</label>
+          <input class="form-input" value="INC0042871" readonly />
+        </div>
+        <div class="form-group">
+          <label class="form-label">State</label>
+          <select class="form-select">
+            <option>New</option>
+            <option selected>In Progress</option>
+            <option>On Hold</option>
+            <option>Resolved</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Priority</label>
+          <select class="form-select">
+            <option selected>1 — Critical</option>
+            <option>2 — High</option>
+            <option>3 — Moderate</option>
+            <option>4 — Low</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Category</label>
+          <select class="form-select">
+            <option selected>Application Error</option>
+            <option>Infrastructure</option>
+            <option>Network</option>
+            <option>Security</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Assignment Group</label>
+          <input class="form-input" value="Cloud Platform Engineering" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Assigned To</label>
+          <input class="form-input" value="Sarah Chen" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Configuration Item</label>
+          <input class="form-input" value="payment-service-prod" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Opened At</label>
+          <input class="form-input" value="2026-06-24 06:45:12" readonly />
+        </div>
+        <div class="form-group form-group--wide">
+          <label class="form-label">Short Description</label>
+          <input class="form-input" value="Payment service returning 502 errors — all regions affected" />
+        </div>
+        <div class="form-group form-group--wide">
+          <label class="form-label">Description</label>
+          <textarea class="form-textarea" rows="5">Starting at 06:42 UTC, the payment-service-prod cluster is returning HTTP 502 (Bad Gateway) errors across all three regions (us-east-1, eu-west-1, ap-southeast-1).
+
+Customer-facing impact: checkout flow is completely broken. ~12,000 failed transactions in the last 15 minutes.
+
+Upstream load balancer health checks are passing, but individual pods are failing readiness probes. Grafana dashboard shows memory usage at 98% on 4/6 pods.
+
+Recent changes: deployment v2.14.3 rolled out at 05:30 UTC (config change to connection pool size). Rollback to v2.14.2 has not been attempted yet.
+
+Slack escalation: #incident-payments channel active. VP Engineering notified.</textarea>
+        </div>
+      </div>
+
+      <!-- Work Notes -->
+      <div class="work-notes-area">
+        <h3>Work Notes</h3>
+        <div class="work-notes-display" id="workNotesDisplay">No work notes yet.</div>
+      </div>
+    </div>
+
+    <!-- ─── RIGHT: AI SIDEBAR ─── -->
+    <div class="sidebar-panel">
+
+      <!-- Header -->
+      <div class="sidebar-header">
+        <div class="sidebar-header__left">
+          <div class="sidebar-header__icon">
+            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+          </div>
+          <span class="sidebar-header__title">AI Analysis</span>
+        </div>
+        <span class="status-badge status-badge--analysing" id="statusBadge">
+          <span class="status-badge__dot"></span>
+          <span id="statusLabel">Analysing…</span>
+        </span>
+      </div>
+
+      <!-- Loading -->
+      <div class="loader" id="loaderSection">
+        <div class="spinner"></div>
+        <span class="loader__text">Analysing incident…</span>
+      </div>
+
+      <!-- Content (hidden until analysis loads) -->
+      <div id="contentSection" class="hidden">
+
+        <!-- Root Cause -->
+        <div class="sidebar-section">
+          <div class="section-title">
+            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+            Root Cause
+          </div>
+          <p class="root-cause-text" id="rootCauseText"></p>
+          <div class="confidence-bar">
+            <div class="confidence-bar__header">
+              <span>Confidence</span>
+              <span class="confidence-bar__value" id="confidenceValue"></span>
+            </div>
+            <div class="confidence-bar__track">
+              <div class="confidence-bar__fill" id="confidenceFill"></div>
+            </div>
+          </div>
+          <div class="warning-banner hidden" id="lowConfidenceWarning">
+            <svg viewBox="0 0 24 24"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+            <span>Low confidence — consider L3 escalation</span>
+          </div>
+        </div>
+
+        <!-- Triage Steps -->
+        <div class="sidebar-section">
+          <div class="section-title">
+            <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zM6 20V4h7v5h5v11H6z"/></svg>
+            Triage Steps
+          </div>
+          <ol class="step-list" id="stepList"></ol>
+        </div>
+
+        <!-- Similar Incidents -->
+        <div class="sidebar-section" id="similarSection">
+          <div class="section-title">
+            <svg viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z"/></svg>
+            Similar Incidents
+            <span class="section-title__count" id="similarCount"></span>
+          </div>
+          <div class="incident-cards" id="incidentCards"></div>
+        </div>
+
+        <!-- KB References -->
+        <div class="sidebar-section" id="kbSection">
+          <div class="section-title">
+            <svg viewBox="0 0 24 24"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 18H6V4h2v8l2.5-1.5L13 12V4h5v16z"/></svg>
+            Knowledge Base
+          </div>
+          <ul class="kb-list" id="kbList"></ul>
+        </div>
+
+        <!-- Resolution Draft -->
+        <div class="sidebar-section">
+          <div class="section-title">
+            <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+            Resolution Draft
+          </div>
+          <textarea class="resolution-textarea" id="resolutionTextarea" rows="5"></textarea>
+          <button class="btn btn--primary" onclick="copyToWorkNotes()">
+            <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+            Copy to work notes
+          </button>
+        </div>
+
+        <!-- Chat / Ask AI -->
+        <div class="sidebar-section">
+          <div class="section-title">
+            <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
+            Ask AI
+          </div>
+          <div class="chat-history" id="chatHistory"></div>
+          <div class="prompt-pills" id="promptPills"></div>
+          <div class="chat-input-row">
+            <input type="text" class="chat-input" id="chatInput" placeholder="Ask about this incident…" />
+            <button class="btn--send" id="chatSendBtn" onclick="sendChat()">
+              <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Feedback -->
+        <div class="sidebar-section feedback-section">
+          <div class="section-title">Was this analysis helpful?</div>
+          <div class="feedback-row">
+            <button class="feedback-btn" id="feedbackUp" onclick="submitFeedback(5)">
+              <svg viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/></svg>
+            </button>
+            <button class="feedback-btn" id="feedbackDown" onclick="submitFeedback(1)">
+              <svg viewBox="0 0 24 24"><path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z"/></svg>
+            </button>
+          </div>
+          <div class="feedback-comment hidden" id="feedbackCommentArea">
+            <textarea class="feedback-textarea" id="feedbackTextarea" rows="2" placeholder="Optional: tell us more…"></textarea>
+            <button class="btn btn--ghost" onclick="submitFeedbackComment()">Submit comment</button>
+          </div>
+          <p class="feedback-thanks hidden" id="feedbackThanks">Thank you for your feedback!</p>
+        </div>
+
+      </div><!-- /contentSection -->
+
+    </div><!-- /sidebar-panel -->
+  </div><!-- /app-layout -->
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       INLINE JAVASCRIPT — ALL APP LOGIC
+       ═══════════════════════════════════════════════════════════════════ -->
+  <script>
+    'use strict';
+
+    // ── Configuration ──────────────────────────────────────────────────
+    const API_BASE = 'http://localhost:8000/api/v1';
+    let mockMode = true;
+    let currentRecommendation = null;
+    let chatSessionId = null;
+    let feedbackRating = null;
+
+    // ── Mock Fixture Data ──────────────────────────────────────────────
+    const MOCK_DATA = {
+      id: 'rec-mock-0001-0001-0001-000000000001',
+      incident_id: 'inc-mock-0001',
+      snow_sys_id: 'abc123def456',
+      root_cause_prediction: 'Memory exhaustion in payment-service pods caused by connection pool misconfiguration in deployment v2.14.3. The connection pool size was increased from 50 to 200 without a corresponding memory limit adjustment, causing each pod to exceed its 2Gi memory limit under peak transaction load.',
+      confidence_score: 0.87,
+      escalate_to_l3: false,
+      triage_steps: [
+        {
+          step: 1,
+          action: 'Verify pod memory utilisation and OOMKill events across all regions',
+          rationale: 'The 98% memory usage on 4/6 pods strongly correlates with the 502 errors. Confirming OOMKill events will validate the memory exhaustion hypothesis before proceeding with remediation.',
+          command: 'kubectl top pods -n payments -l app=payment-service --sort-by=memory'
+        },
+        {
+          step: 2,
+          action: 'Rollback deployment from v2.14.3 to v2.14.2 to restore previous connection pool config',
+          rationale: 'v2.14.3 changed the connection pool size from 50 to 200. Rolling back will immediately reduce per-pod memory consumption and restore service health.',
+          command: 'kubectl rollout undo deployment/payment-service -n payments --to-revision=42'
+        },
+        {
+          step: 3,
+          action: 'Monitor pod health and transaction success rate for 10 minutes post-rollback',
+          rationale: 'After rollback, pods need time to stabilise. Monitoring ensures the fix is effective before closing the bridge call.',
+          command: null
+        },
+        {
+          step: 4,
+          action: 'Raise a change request to re-deploy v2.14.3 with corrected memory limits (4Gi) and connection pool size (100)',
+          rationale: 'The connection pool increase is valid for performance, but needs a proportional memory allocation. A post-incident change ensures the improvement is preserved safely.',
+          command: null
+        }
+      ],
+      similar_incidents: [
+        {
+          number: 'INC0039201',
+          sys_id: 'sim001',
+          similarity_score: 0.93,
+          resolution_summary: 'OOMKill on payment pods after connection pool change. Rolled back deployment and increased memory limits from 2Gi to 4Gi.',
+          resolution_time_min: 47,
+          category: 'Application Error'
+        },
+        {
+          number: 'INC0041102',
+          sys_id: 'sim002',
+          similarity_score: 0.81,
+          resolution_summary: 'Memory leak in order-service caused 502s across EU region. Identified thread pool exhaustion and applied hotfix.',
+          resolution_time_min: 125,
+          category: 'Application Error'
+        },
+        {
+          number: 'INC0038744',
+          sys_id: 'sim003',
+          similarity_score: 0.74,
+          resolution_summary: 'Load balancer 502 errors during peak traffic. Scaled HPA from 6 to 12 pods and tuned readiness probe thresholds.',
+          resolution_time_min: 63,
+          category: 'Infrastructure'
+        }
+      ],
+      kb_references: [
+        {
+          kb_number: 'KB0012847',
+          title: 'Payment Service — Connection Pool Tuning Guide',
+          relevance_score: 0.92
+        },
+        {
+          kb_number: 'KB0011523',
+          title: 'Kubernetes Memory Limits and OOMKill Troubleshooting',
+          relevance_score: 0.85
+        }
+      ],
+      resolution_draft: 'Root cause: Memory exhaustion on payment-service pods due to connection pool size increase in v2.14.3 (50→200) without corresponding memory limit adjustment.\n\nActions taken:\n1. Confirmed OOMKill events on 4/6 pods via kubectl\n2. Rolled back to v2.14.2 (connection pool=50, memory=2Gi)\n3. Service restored — 502 errors resolved within 3 minutes\n4. Change request CR0089214 raised for v2.14.3 re-deployment with memory=4Gi and pool=100\n\nCustomer impact: ~15 minutes of checkout downtime affecting ~12,000 transactions. Recovery notifications sent via status page.',
+      sources_used: ['INC0039201', 'INC0041102', 'KB0012847'],
+      retrieval_latency_ms: 142,
+      generation_latency_ms: 1830
+    };
+
+    const MOCK_CHAT_RESPONSES = {
+      'Likely cause?': 'Based on the analysis, the most likely root cause is memory exhaustion caused by the connection pool size increase in deployment v2.14.3. The pool was changed from 50 to 200 connections, but the pod memory limit remained at 2Gi. Under peak load (~2000 TPS), each connection consumes ~8MB, pushing total memory well beyond the limit.',
+      'Show similar incidents': 'I found 3 highly similar incidents:\n\n• **INC0039201** (93% match) — Same service, same root cause. Resolved in 47 min by rollback + memory increase.\n• **INC0041102** (81% match) — Different service but same pattern (memory leak → 502s). 2h 5m to resolve.\n• **INC0038744** (74% match) — Load balancer 502s, resolved by scaling HPA.',
+      'Check runbook': 'The relevant runbook is **RB-PAY-004: Payment Service Pod Recovery**.\n\nKey steps:\n1. Check pod status: `kubectl get pods -n payments`\n2. Review recent deployments: `kubectl rollout history deployment/payment-service -n payments`\n3. If OOMKill detected, rollback immediately\n4. Scale HPA if traffic-related\n\nThis runbook was last updated 2026-05-15.',
+      'Escalation criteria': 'Based on the escalation matrix for payment-service:\n\n**L3 Escalation Required When:**\n• Service degraded for >30 minutes after initial triage\n• Root cause involves data corruption or security breach\n• Confidence score below 0.6\n• Multiple dependent services affected\n\n**Current Assessment:** L3 escalation is NOT recommended. Confidence is 87% and the rollback pattern has resolved similar incidents previously.'
+    };
+
+    // ── Toggle Mock Mode ───────────────────────────────────────────────
+    function toggleMockMode() {
+      mockMode = !mockMode;
+      document.getElementById('mockToggle').classList.toggle('active', mockMode);
+      // Re-run analysis with new mode
+      resetAndAnalyze();
+    }
+
+    // ── Initialization ─────────────────────────────────────────────────
+    function resetAndAnalyze() {
+      currentRecommendation = null;
+      chatSessionId = null;
+      feedbackRating = null;
+      document.getElementById('loaderSection').classList.remove('hidden');
+      document.getElementById('contentSection').classList.add('hidden');
+      document.getElementById('chatHistory').innerHTML = '';
+      document.getElementById('feedbackUp').classList.remove('active');
+      document.getElementById('feedbackDown').classList.remove('active');
+      document.getElementById('feedbackCommentArea').classList.add('hidden');
+      document.getElementById('feedbackThanks').classList.add('hidden');
+      setStatus('analysing', 'Analysing…');
+      triggerAnalysis();
+    }
+
+    // ── Status Badge ───────────────────────────────────────────────────
+    function setStatus(type, label) {
+      const badge = document.getElementById('statusBadge');
+      badge.className = 'status-badge status-badge--' + type;
+      document.getElementById('statusLabel').textContent = label;
+    }
+
+    // ── Trigger Analysis ───────────────────────────────────────────────
+    function triggerAnalysis() {
+      if (mockMode) {
+        // Simulate network delay
+        setTimeout(() => {
+          renderRecommendation(MOCK_DATA);
+        }, 1800);
+        return;
+      }
+
+      fetch(API_BASE + '/incidents/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sys_id: 'abc123def456' })
+      })
+      .then(res => res.json())
+      .then(data => {
+        const recId = data.recommendation_id || data.id;
+        pollRecommendation(recId, 0);
+      })
+      .catch(err => {
+        showToast('⚠ Failed to connect to backend: ' + err.message);
+        // Fallback to mock
+        setTimeout(() => renderRecommendation(MOCK_DATA), 500);
+      });
+    }
+
+    function pollRecommendation(recId, attempt) {
+      if (attempt > 60) {
+        showToast('⚠ Analysis timed out');
+        return;
+      }
+
+      fetch(API_BASE + '/recommendations/' + recId)
+        .then(res => res.json())
+        .then(data => {
+          if (data.status === 'complete' || data.root_cause_prediction) {
+            renderRecommendation(data);
+          } else {
+            setTimeout(() => pollRecommendation(recId, attempt + 1), 3000);
+          }
+        })
+        .catch(() => {
+          setTimeout(() => pollRecommendation(recId, attempt + 1), 3000);
+        });
+    }
+
+    // ── Render Recommendation ──────────────────────────────────────────
+    function renderRecommendation(data) {
+      currentRecommendation = data;
+
+      // Status
+      if (data.confidence_score < 0.6) {
+        setStatus('low', 'Low confidence');
+      } else {
+        setStatus('ready', 'Ready');
+      }
+
+      // Root cause
+      document.getElementById('rootCauseText').innerHTML = '<strong>' + escapeHtml(data.root_cause_prediction) + '</strong>';
+
+      // Confidence bar
+      const pct = Math.round(data.confidence_score * 100);
+      document.getElementById('confidenceValue').textContent = pct + '%';
+      const fill = document.getElementById('confidenceFill');
+      fill.style.width = pct + '%';
+      fill.className = 'confidence-bar__fill';
+      if (data.confidence_score >= 0.8) fill.classList.add('confidence-bar__fill--green');
+      else if (data.confidence_score >= 0.6) fill.classList.add('confidence-bar__fill--amber');
+      else fill.classList.add('confidence-bar__fill--red');
+
+      // Low confidence warning
+      document.getElementById('lowConfidenceWarning').classList.toggle('hidden', data.confidence_score >= 0.6);
+
+      // Triage steps
+      renderSteps(data.triage_steps);
+
+      // Similar incidents
+      renderSimilarIncidents(data.similar_incidents);
+
+      // KB references
+      renderKBRefs(data.kb_references);
+
+      // Resolution draft
+      document.getElementById('resolutionTextarea').value = data.resolution_draft || '';
+
+      // Prompt pills
+      renderPromptPills();
+
+      // Show content
+      document.getElementById('loaderSection').classList.add('hidden');
+      document.getElementById('contentSection').classList.remove('hidden');
+    }
+
+    // ── Render Triage Steps ────────────────────────────────────────────
+    function renderSteps(steps) {
+      const list = document.getElementById('stepList');
+      list.innerHTML = '';
+
+      steps.forEach(step => {
+        const li = document.createElement('li');
+        li.className = 'step-card';
+        li.id = 'step-' + step.step;
+
+        let html = `
+          <div class="step-card__header">
+            <input type="checkbox" class="step-checkbox" onchange="toggleStepComplete(${step.step}, this.checked)" />
+            <span class="step-number">${step.step}</span>
+            <span class="step-action">${escapeHtml(step.action)}</span>
+            <button class="step-expand-btn" onclick="toggleRationale(${step.step}, this)">
+              <svg viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+            </button>
+          </div>
+          <div class="step-rationale hidden" id="rationale-${step.step}">
+            ${escapeHtml(step.rationale)}
+          </div>`;
+
+        if (step.command) {
+          html += `
+          <div class="step-command">
+            <code>${escapeHtml(step.command)}</code>
+            <button class="copy-btn" onclick="copyText('${escapeAttr(step.command)}')" title="Copy command">
+              <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+            </button>
+          </div>`;
+        }
+
+        li.innerHTML = html;
+        list.appendChild(li);
+      });
+    }
+
+    function toggleStepComplete(stepNum, checked) {
+      const card = document.getElementById('step-' + stepNum);
+      card.classList.toggle('completed', checked);
+    }
+
+    function toggleRationale(stepNum, btn) {
+      const el = document.getElementById('rationale-' + stepNum);
+      const isHidden = el.classList.contains('hidden');
+      el.classList.toggle('hidden');
+      btn.classList.toggle('open', isHidden);
+    }
+
+    // ── Render Similar Incidents ───────────────────────────────────────
+    function renderSimilarIncidents(incidents) {
+      const section = document.getElementById('similarSection');
+      const container = document.getElementById('incidentCards');
+
+      if (!incidents || incidents.length === 0) {
+        section.classList.add('hidden');
+        return;
+      }
+
+      section.classList.remove('hidden');
+      document.getElementById('similarCount').textContent = '(' + incidents.length + ')';
+      container.innerHTML = '';
+
+      incidents.slice(0, 5).forEach(inc => {
+        const card = document.createElement('div');
+        card.className = 'incident-card';
+
+        const pct = Math.round(inc.similarity_score * 100);
+        const time = formatTime(inc.resolution_time_min);
+
+        card.innerHTML = `
+          <div class="incident-card__top">
+            <span class="incident-card__number">${escapeHtml(inc.number)}</span>
+            <span class="similarity-pill">${pct}% match</span>
+          </div>
+          ${inc.resolution_summary ? '<p class="incident-card__summary">' + escapeHtml(inc.resolution_summary) + '</p>' : ''}
+          ${time ? `<span class="incident-card__time"><svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>${time}</span>` : ''}`;
+
+        container.appendChild(card);
+      });
+    }
+
+    // ── Render KB References ───────────────────────────────────────────
+    function renderKBRefs(refs) {
+      const section = document.getElementById('kbSection');
+      const list = document.getElementById('kbList');
+
+      if (!refs || refs.length === 0) {
+        section.classList.add('hidden');
+        return;
+      }
+
+      section.classList.remove('hidden');
+      list.innerHTML = '';
+
+      refs.forEach(kb => {
+        const li = document.createElement('li');
+        li.className = 'kb-item';
+        li.innerHTML = `
+          <span class="kb-link">${escapeHtml(kb.title || kb.kb_number)}</span>
+          <span class="kb-score">${Math.round(kb.relevance_score * 100)}% relevant</span>`;
+        list.appendChild(li);
+      });
+    }
+
+    // ── Prompt Pills ───────────────────────────────────────────────────
+    function renderPromptPills() {
+      const container = document.getElementById('promptPills');
+      container.innerHTML = '';
+      const prompts = ['Likely cause?', 'Show similar incidents', 'Check runbook', 'Escalation criteria'];
+      prompts.forEach(p => {
+        const btn = document.createElement('button');
+        btn.className = 'pill';
+        btn.textContent = p;
+        btn.onclick = () => sendChat(p);
+        container.appendChild(btn);
+      });
+    }
+
+    // ── Chat ───────────────────────────────────────────────────────────
+    function sendChat(overrideMessage) {
+      const input = document.getElementById('chatInput');
+      const message = overrideMessage || input.value.trim();
+      if (!message) return;
+      input.value = '';
+
+      appendChatMsg('user', message);
+
+      if (mockMode) {
+        // Check for exact match in mock responses, else generic
+        setTimeout(() => {
+          const response = MOCK_CHAT_RESPONSES[message] ||
+            'Based on the incident data and similar historical cases, I can help with that. The payment-service is experiencing memory exhaustion due to the connection pool configuration change in v2.14.3. Could you be more specific about what aspect you\'d like me to investigate?';
+          appendChatMsg('assistant', response);
+        }, 800 + Math.random() * 600);
+        return;
+      }
+
+      fetch(API_BASE + '/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          incident_id: 'abc123def456',
+          message: message,
+          session_id: chatSessionId,
+          engineer_id: 'test-engineer-001'
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        chatSessionId = data.session_id;
+        appendChatMsg('assistant', data.response);
+      })
+      .catch(() => {
+        appendChatMsg('assistant', 'Sorry, I couldn\'t reach the backend. Please check that the FastAPI server is running at ' + API_BASE);
+      });
+    }
+
+    function appendChatMsg(role, content) {
+      const container = document.getElementById('chatHistory');
+      const div = document.createElement('div');
+      div.className = 'chat-msg chat-msg--' + role;
+      div.innerHTML = `
+        <span class="chat-msg__role">${role === 'user' ? 'You' : 'AI'}</span>
+        <p class="chat-msg__text">${formatChatText(content)}</p>`;
+      container.appendChild(div);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function formatChatText(text) {
+      // Basic markdown-like formatting for bold and inline code
+      return escapeHtml(text)
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/`(.*?)`/g, '<code style="background:var(--bg-input);padding:1px 5px;border-radius:3px;font-family:var(--font-mono);font-size:12px;">$1</code>')
+        .replace(/\n/g, '<br>');
+    }
+
+    // Enter key support for chat
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('chatInput').addEventListener('keydown', e => {
+        if (e.key === 'Enter') sendChat();
+      });
+    });
+
+    // ── Copy to Work Notes ─────────────────────────────────────────────
+    function copyToWorkNotes() {
+      const text = document.getElementById('resolutionTextarea').value;
+      if (!text) return;
+
+      // Simulate g_form.setValue — populate the work notes display
+      const display = document.getElementById('workNotesDisplay');
+      const timestamp = new Date().toLocaleString();
+      display.textContent = '[AI Recommendation — ' + timestamp + ']\n\n' + text;
+
+      // Also copy to clipboard
+      copyText(text);
+      showToast('✓ Copied to work notes');
+    }
+
+    // ── Feedback ───────────────────────────────────────────────────────
+    function submitFeedback(rating) {
+      feedbackRating = rating;
+
+      document.getElementById('feedbackUp').classList.toggle('active', rating === 5);
+      document.getElementById('feedbackDown').classList.toggle('active', rating === 1);
+      document.getElementById('feedbackCommentArea').classList.remove('hidden');
+
+      if (!mockMode && currentRecommendation) {
+        fetch(API_BASE + '/feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            recommendation_id: currentRecommendation.id,
+            rating: rating,
+            engineer_id: 'test-engineer-001'
+          })
+        }).catch(() => {});
+      }
+
+      showToast(rating === 5 ? '👍 Thanks for the positive feedback!' : '👎 Feedback recorded — we\'ll improve');
+    }
+
+    function submitFeedbackComment() {
+      const comment = document.getElementById('feedbackTextarea').value.trim();
+      if (!comment) return;
+
+      if (!mockMode && currentRecommendation) {
+        fetch(API_BASE + '/feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            recommendation_id: currentRecommendation.id,
+            rating: feedbackRating,
+            comment: comment,
+            engineer_id: 'test-engineer-001'
+          })
+        }).catch(() => {});
+      }
+
+      document.getElementById('feedbackCommentArea').classList.add('hidden');
+      document.getElementById('feedbackThanks').classList.remove('hidden');
+      showToast('✓ Comment submitted');
+    }
+
+    // ── Utilities ──────────────────────────────────────────────────────
+    function copyText(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => showToast('✓ Copied to clipboard'));
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        showToast('✓ Copied to clipboard');
+      }
+    }
+
+    function formatTime(minutes) {
+      if (!minutes) return '';
+      if (minutes < 60) return minutes + ' min';
+      const h = Math.floor(minutes / 60);
+      const m = minutes % 60;
+      if (h < 24) return h + 'h ' + m + 'm';
+      const d = Math.floor(h / 24);
+      return d + 'd ' + (h % 24) + 'h';
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function escapeAttr(str) {
+      return str.replace(/'/g, "\\'").replace(/"/g, '\\"');
+    }
+
+    function showToast(message) {
+      // Remove any existing toast
+      const existing = document.querySelector('.toast');
+      if (existing) existing.remove();
+
+      const toast = document.createElement('div');
+      toast.className = 'toast';
+      toast.textContent = message;
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 2600);
+    }
+
+    // ── Boot ───────────────────────────────────────────────────────────
+    document.addEventListener('DOMContentLoaded', () => {
+      triggerAnalysis();
+    });
+  </script>
+
+</body>
+</html>

@@ -1,0 +1,109 @@
+
+services:
+  # ── FastAPI Application ─────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: l2-assistant-api
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app  # Hot reload
+      - ./scripts:/app/scripts
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - l2-assistant-net
+
+  # ── PostgreSQL with pgvector ────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: l2-assistant-postgres
+    environment:
+      POSTGRES_DB: l2assistant
+      POSTGRES_USER: l2assistant
+      POSTGRES_PASSWORD: l2assistant
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U l2assistant"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - l2-assistant-net
+
+  # ── Redis ───────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: l2-assistant-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - l2-assistant-net
+
+  # ── Celery Worker ───────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: l2-assistant-worker
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
+    volumes:
+      - ./app:/app/app
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - l2-assistant-net
+
+  # ── Celery Beat Scheduler ──────────────────────────────────────────────
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: l2-assistant-beat
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    volumes:
+      - ./app:/app/app
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - l2-assistant-net
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  l2-assistant-net:
+    driver: bridge

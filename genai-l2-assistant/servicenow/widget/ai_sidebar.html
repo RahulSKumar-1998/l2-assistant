@@ -1,0 +1,308 @@
+<!--
+  ══════════════════════════════════════════════════════════════════════════════
+  GenAI L2 Support Assistant — ServiceNow AI Sidebar Widget (HTML Template)
+  ══════════════════════════════════════════════════════════════════════════════
+
+  DEPLOYMENT INSTRUCTIONS (ServiceNow):
+  ──────────────────────────────────────
+  1. Navigate to Service Portal > Widget Designer (sp_widget.do).
+  2. Create a new widget named "GenAI AI Analysis Sidebar".
+  3. Paste this file into the "Body HTML template" field.
+  4. Paste ai_sidebar.js into the "Client controller" field.
+  5. Paste ai_sidebar.css into the "CSS" field.
+  6. In UI Builder, drag this widget onto the incident form workspace
+     as a sidebar panel (right rail, 400px recommended width).
+  7. Pass the current incident sys_id via widget options:
+        <widget id="genai-ai-sidebar" options="{sysId: g_form.getUniqueValue()}"></widget>
+  8. Ensure the MID Server or outbound REST rule allows calls to
+     your FastAPI backend URL (https://your-api-host/api/v1/).
+
+  ANGULAR BINDINGS:
+  ─────────────────
+  This template uses AngularJS 1.x (ServiceNow's built-in framework).
+  The controller scope (c) is provided by ai_sidebar.js.
+  All data flows through c.data which maps to the server-side data object.
+-->
+
+<!-- ── Main Container ────────────────────────────────────────────────────── -->
+<div class="ai-sidebar" ng-class="{'ai-sidebar--loading': c.isLoading}">
+
+  <!-- ── Header Bar ──────────────────────────────────────────────────────── -->
+  <header class="ai-sidebar__header">
+    <div class="ai-sidebar__header-left">
+      <svg class="ai-sidebar__icon" viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+      </svg>
+      <h2 class="ai-sidebar__title">AI Analysis</h2>
+    </div>
+
+    <!-- Status Badge -->
+    <span class="ai-sidebar__badge"
+          ng-class="{
+            'ai-sidebar__badge--analysing': c.status === 'analysing',
+            'ai-sidebar__badge--ready':     c.status === 'ready',
+            'ai-sidebar__badge--low':       c.status === 'low_confidence'
+          }">
+      <span class="ai-sidebar__badge-dot"></span>
+      {{c.statusLabel}}
+    </span>
+  </header>
+
+  <!-- ── Loading State ───────────────────────────────────────────────────── -->
+  <div class="ai-sidebar__loader" ng-if="c.isLoading">
+    <div class="ai-sidebar__spinner"></div>
+    <p class="ai-sidebar__loader-text">Analysing incident…</p>
+  </div>
+
+  <!-- ── Content (shown after analysis completes) ────────────────────────── -->
+  <div class="ai-sidebar__content" ng-if="!c.isLoading && c.recommendation">
+
+    <!-- ── Root Cause Section ────────────────────────────────────────────── -->
+    <section class="ai-sidebar__section">
+      <h3 class="ai-sidebar__section-title">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+        Root Cause
+      </h3>
+      <p class="ai-sidebar__root-cause-text">
+        <strong>{{c.recommendation.root_cause_prediction}}</strong>
+      </p>
+
+      <!-- Confidence Bar -->
+      <div class="ai-sidebar__confidence">
+        <div class="ai-sidebar__confidence-label">
+          Confidence:
+          <span class="ai-sidebar__confidence-value">{{(c.recommendation.confidence_score * 100) | number:0}}%</span>
+        </div>
+        <div class="ai-sidebar__confidence-track">
+          <div class="ai-sidebar__confidence-fill"
+               ng-class="{
+                 'ai-sidebar__confidence-fill--green': c.recommendation.confidence_score >= 0.8,
+                 'ai-sidebar__confidence-fill--amber': c.recommendation.confidence_score >= 0.6 && c.recommendation.confidence_score < 0.8,
+                 'ai-sidebar__confidence-fill--red':   c.recommendation.confidence_score < 0.6
+               }"
+               ng-style="{'width': (c.recommendation.confidence_score * 100) + '%'}">
+          </div>
+        </div>
+      </div>
+
+      <!-- Low Confidence Warning -->
+      <div class="ai-sidebar__warning" ng-if="c.recommendation.confidence_score < 0.6">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+        <span>Low confidence — consider L3 escalation</span>
+      </div>
+    </section>
+
+    <!-- ── Triage Steps ──────────────────────────────────────────────────── -->
+    <section class="ai-sidebar__section">
+      <h3 class="ai-sidebar__section-title">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zM6 20V4h7v5h5v11H6z"/></svg>
+        Triage Steps
+      </h3>
+      <ol class="ai-sidebar__steps-list">
+        <li class="ai-sidebar__step"
+            ng-repeat="step in c.recommendation.triage_steps track by step.step"
+            ng-class="{'ai-sidebar__step--done': c.completedSteps[step.step]}">
+
+          <!-- Step Header -->
+          <div class="ai-sidebar__step-header">
+            <label class="ai-sidebar__step-check">
+              <input type="checkbox"
+                     ng-model="c.completedSteps[step.step]"
+                     ng-change="c.onStepToggle(step.step)"
+                     aria-label="Mark step {{step.step}} complete" />
+              <span class="ai-sidebar__step-number">{{step.step}}</span>
+            </label>
+            <span class="ai-sidebar__step-action">{{step.action}}</span>
+            <button class="ai-sidebar__step-expand"
+                    ng-click="c.toggleRationale(step.step)"
+                    aria-label="Toggle rationale"
+                    aria-expanded="{{c.expandedSteps[step.step]}}">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"
+                   ng-class="{'ai-sidebar__chevron--open': c.expandedSteps[step.step]}">
+                <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Collapsible Rationale -->
+          <div class="ai-sidebar__step-rationale" ng-if="c.expandedSteps[step.step]">
+            <p>{{step.rationale}}</p>
+          </div>
+
+          <!-- Optional Command Block -->
+          <div class="ai-sidebar__step-command" ng-if="step.command">
+            <code>{{step.command}}</code>
+            <button class="ai-sidebar__copy-btn"
+                    ng-click="c.copyToClipboard(step.command)"
+                    title="Copy command">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+            </button>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <!-- ── Similar Incidents ─────────────────────────────────────────────── -->
+    <section class="ai-sidebar__section" ng-if="c.recommendation.similar_incidents.length > 0">
+      <h3 class="ai-sidebar__section-title">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z"/></svg>
+        Similar Incidents
+        <span class="ai-sidebar__count">({{c.recommendation.similar_incidents.length}})</span>
+      </h3>
+      <div class="ai-sidebar__incident-cards">
+        <div class="ai-sidebar__incident-card"
+             ng-repeat="inc in c.recommendation.similar_incidents | limitTo:5 track by inc.number">
+          <div class="ai-sidebar__incident-card-header">
+            <a class="ai-sidebar__incident-link"
+               ng-href="/nav_to.do?uri=incident.do?sys_id={{inc.sys_id}}"
+               target="_blank"
+               title="Open {{inc.number}} in ServiceNow">
+              {{inc.number}}
+            </a>
+            <span class="ai-sidebar__similarity-badge">
+              {{(inc.similarity_score * 100) | number:0}}% match
+            </span>
+          </div>
+          <p class="ai-sidebar__incident-resolution" ng-if="inc.resolution_summary">
+            {{inc.resolution_summary}}
+          </p>
+          <span class="ai-sidebar__incident-time" ng-if="inc.resolution_time_min">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
+            Resolved in {{c.formatResolutionTime(inc.resolution_time_min)}}
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── KB References ─────────────────────────────────────────────────── -->
+    <section class="ai-sidebar__section" ng-if="c.recommendation.kb_references.length > 0">
+      <h3 class="ai-sidebar__section-title">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 18H6V4h2v8l2.5-1.5L13 12V4h5v16z"/></svg>
+        Knowledge Base
+      </h3>
+      <ul class="ai-sidebar__kb-list">
+        <li class="ai-sidebar__kb-item"
+            ng-repeat="kb in c.recommendation.kb_references track by kb.kb_number">
+          <a class="ai-sidebar__kb-link"
+             ng-href="/nav_to.do?uri=kb_view.do?sys_kb_id={{kb.kb_number}}"
+             target="_blank">
+            {{kb.title || kb.kb_number}}
+          </a>
+          <span class="ai-sidebar__kb-score">
+            {{(kb.relevance_score * 100) | number:0}}% relevant
+          </span>
+        </li>
+      </ul>
+    </section>
+
+    <!-- ── Resolution Draft ──────────────────────────────────────────────── -->
+    <section class="ai-sidebar__section">
+      <h3 class="ai-sidebar__section-title">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+        Resolution Draft
+      </h3>
+      <textarea class="ai-sidebar__resolution-textarea"
+                ng-model="c.recommendation.resolution_draft"
+                rows="5"
+                placeholder="AI-generated resolution draft…"
+                aria-label="Resolution draft"></textarea>
+      <button class="ai-sidebar__btn ai-sidebar__btn--primary"
+              ng-click="c.copyToWorkNotes()"
+              title="Copy the resolution draft into the incident work notes field">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+        Copy to work notes
+      </button>
+    </section>
+
+    <!-- ── Ask AI (Chat) ─────────────────────────────────────────────────── -->
+    <section class="ai-sidebar__section">
+      <h3 class="ai-sidebar__section-title">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
+        Ask AI
+      </h3>
+
+      <!-- Chat History -->
+      <div class="ai-sidebar__chat-history" ng-if="c.chatMessages.length > 0">
+        <div class="ai-sidebar__chat-msg"
+             ng-repeat="msg in c.chatMessages track by $index"
+             ng-class="'ai-sidebar__chat-msg--' + msg.role">
+          <span class="ai-sidebar__chat-role">{{msg.role === 'user' ? 'You' : 'AI'}}</span>
+          <p class="ai-sidebar__chat-text">{{msg.content}}</p>
+        </div>
+      </div>
+
+      <!-- Suggested Prompt Pills -->
+      <div class="ai-sidebar__prompt-pills">
+        <button class="ai-sidebar__pill"
+                ng-repeat="prompt in c.suggestedPrompts track by $index"
+                ng-click="c.sendChatMessage(prompt)">
+          {{prompt}}
+        </button>
+      </div>
+
+      <!-- Chat Input -->
+      <div class="ai-sidebar__chat-input-row">
+        <input type="text"
+               class="ai-sidebar__chat-input"
+               ng-model="c.chatInput"
+               ng-keydown="$event.keyCode === 13 && c.sendChatMessage(c.chatInput)"
+               placeholder="Ask about this incident…"
+               aria-label="Chat input" />
+        <button class="ai-sidebar__btn ai-sidebar__btn--send"
+                ng-click="c.sendChatMessage(c.chatInput)"
+                ng-disabled="!c.chatInput"
+                aria-label="Send message">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </div>
+    </section>
+
+    <!-- ── Feedback ──────────────────────────────────────────────────────── -->
+    <section class="ai-sidebar__section ai-sidebar__section--feedback">
+      <h3 class="ai-sidebar__section-title">Was this analysis helpful?</h3>
+      <div class="ai-sidebar__feedback-row">
+        <button class="ai-sidebar__feedback-btn"
+                ng-class="{'ai-sidebar__feedback-btn--active': c.feedbackRating === 5}"
+                ng-click="c.submitFeedback(5)"
+                aria-label="Thumbs up">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/></svg>
+        </button>
+        <button class="ai-sidebar__feedback-btn"
+                ng-class="{'ai-sidebar__feedback-btn--active': c.feedbackRating === 1}"
+                ng-click="c.submitFeedback(1)"
+                aria-label="Thumbs down">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z"/></svg>
+        </button>
+      </div>
+
+      <!-- Optional Feedback Comment -->
+      <div class="ai-sidebar__feedback-comment" ng-if="c.feedbackRating !== null">
+        <textarea class="ai-sidebar__feedback-textarea"
+                  ng-model="c.feedbackComment"
+                  rows="2"
+                  placeholder="Optional: tell us more…"
+                  aria-label="Feedback comment"></textarea>
+        <button class="ai-sidebar__btn ai-sidebar__btn--small"
+                ng-click="c.submitFeedbackComment()"
+                ng-if="c.feedbackComment">
+          Submit comment
+        </button>
+      </div>
+
+      <p class="ai-sidebar__feedback-thanks" ng-if="c.feedbackSubmitted">
+        Thank you for your feedback!
+      </p>
+    </section>
+
+  </div><!-- /content -->
+
+  <!-- ── Error State ─────────────────────────────────────────────────────── -->
+  <div class="ai-sidebar__error" ng-if="c.errorMessage">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+    <p>{{c.errorMessage}}</p>
+    <button class="ai-sidebar__btn ai-sidebar__btn--small" ng-click="c.retryAnalysis()">
+      Retry
+    </button>
+  </div>
+
+</div>

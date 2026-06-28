@@ -1,0 +1,385 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "GenAI L2 Support Assistant — Operational Dashboard",
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 1,
+  "id": null,
+  "iteration": 1705334400000,
+  "links": [],
+  "panels": [
+    {
+      "title": "Incidents Analyzed / Hour",
+      "type": "timeseries",
+      "id": 1,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisLabel": "incidents/hour",
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "spanNulls": false
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(l2_incidents_analyzed_total[1h])) * 3600",
+          "legendFormat": "Incidents/Hour",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      }
+    },
+    {
+      "title": "Recommendation Latency (P50 / P95 / P99)",
+      "type": "timeseries",
+      "id": 2,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisLabel": "seconds",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(l2_recommendation_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(l2_recommendation_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(l2_recommendation_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P99",
+          "refId": "C"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    },
+    {
+      "title": "Confidence Score Distribution",
+      "type": "histogram",
+      "id": 3,
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(l2_confidence_score_bucket[1h])) by (le)",
+          "legendFormat": "{{le}}",
+          "refId": "A",
+          "format": "heatmap"
+        }
+      ],
+      "options": {
+        "bucketSize": 0.1,
+        "combine": false,
+        "fillOpacity": 80,
+        "gradientMode": "scheme",
+        "legend": { "displayMode": "list" }
+      }
+    },
+    {
+      "title": "Feedback Rate (Positive vs Negative)",
+      "type": "timeseries",
+      "id": 4,
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisLabel": "feedback/hour",
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 1,
+            "stacking": { "mode": "normal" }
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Positive" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Negative" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(l2_feedback_total{rating=\"5\"}[1h])) * 3600",
+          "legendFormat": "Positive",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(l2_feedback_total{rating=\"1\"}[1h])) * 3600",
+          "legendFormat": "Negative",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    },
+    {
+      "title": "Escalation Rate",
+      "type": "stat",
+      "id": 5,
+      "gridPos": { "h": 8, "w": 4, "x": 16, "y": 8 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.15 },
+              { "color": "red", "value": 0.30 }
+            ]
+          },
+          "unit": "percentunit",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(l2_escalation_total[1h])) / sum(rate(l2_incidents_analyzed_total[1h]))",
+          "legendFormat": "Escalation Rate",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "background",
+        "justifyMode": "center"
+      }
+    },
+    {
+      "title": "Error Rate by Type",
+      "type": "timeseries",
+      "id": 6,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisLabel": "errors/min",
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "lineWidth": 2
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(l2_llm_errors_total[5m])) * 60",
+          "legendFormat": "LLM Errors",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(l2_retrieval_errors_total[5m])) * 60",
+          "legendFormat": "Retrieval Errors",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(l2_webhook_errors_total[5m])) * 60",
+          "legendFormat": "Webhook Errors",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(l2_db_errors_total[5m])) * 60",
+          "legendFormat": "Database Errors",
+          "refId": "D"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    },
+    {
+      "title": "Retrieval vs Generation Latency",
+      "type": "timeseries",
+      "id": 7,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisLabel": "seconds",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(l2_retrieval_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "Retrieval P95",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(l2_generation_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "Generation P95",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    },
+    {
+      "title": "Summary Stats",
+      "type": "stat",
+      "id": 8,
+      "gridPos": { "h": 4, "w": 20, "x": 0, "y": 24 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(l2_incidents_analyzed_total)",
+          "legendFormat": "Total Incidents Analyzed",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(l2_feedback_total)",
+          "legendFormat": "Total Feedback",
+          "refId": "B"
+        },
+        {
+          "expr": "avg(l2_confidence_score)",
+          "legendFormat": "Avg Confidence",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(l2_feedback_total{rating=\"5\"}[24h])) / sum(rate(l2_feedback_total[24h]))",
+          "legendFormat": "Positive Rate (24h)",
+          "refId": "D"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "graphMode": "none",
+        "colorMode": "value"
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["l2-assistant", "genai", "rag"],
+  "templating": {
+    "list": [
+      {
+        "allValue": ".*",
+        "current": { "selected": false, "text": "All", "value": "$__all" },
+        "datasource": "Prometheus",
+        "definition": "label_values(l2_incidents_analyzed_total, environment)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": false,
+        "name": "environment",
+        "query": "label_values(l2_incidents_analyzed_total, environment)",
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GenAI L2 Support Assistant",
+  "uid": "l2-assistant-dashboard",
+  "version": 1
+}

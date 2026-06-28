@@ -1,0 +1,141 @@
+{
+  "_comment": [
+    "══════════════════════════════════════════════════════════════════",
+    "GenAI L2 Support Assistant — Flow Designer Export (Placeholder)",
+    "══════════════════════════════════════════════════════════════════",
+    "",
+    "DEPLOYMENT INSTRUCTIONS:",
+    "  1. Navigate to Flow Designer (flow_designer.do) in ServiceNow.",
+    "  2. Click 'Import Flow' and upload this JSON.",
+    "  3. Alternatively, recreate the flow manually using the structure below.",
+    "  4. Activate the flow after configuring the REST endpoint properties.",
+    "",
+    "NOTE: This is a structural placeholder. ServiceNow Flow Designer",
+    "exports use a proprietary format tied to instance-specific sys_ids.",
+    "Use this as a reference to manually build the flow in your instance."
+  ],
+
+  "flow": {
+    "name": "GenAI AI Analysis Flow",
+    "scope": "x_genai",
+    "description": "Triggers AI-powered incident analysis when a new incident is created or assignment changes. Sends incident data to the GenAI FastAPI backend and polls for results.",
+    "active": true,
+    "run_as": "System",
+    "category": "AI Operations",
+    "application": "GenAI L2 Support Assistant",
+
+    "trigger": {
+      "type": "record",
+      "table": "incident",
+      "events": ["insert", "update"],
+      "conditions": {
+        "_comment": "Fires on new incidents OR when assigned_to field changes",
+        "type": "OR",
+        "rules": [
+          {
+            "field": null,
+            "operator": "is_new_record",
+            "value": true
+          },
+          {
+            "field": "assigned_to",
+            "operator": "changes",
+            "value": null
+          }
+        ]
+      }
+    },
+
+    "actions": [
+      {
+        "step": 1,
+        "name": "Build Webhook Payload",
+        "type": "script",
+        "description": "Construct the JSON payload with incident fields for the AI backend.",
+        "script": {
+          "inputs": {
+            "incident_sys_id": "{{trigger.record.sys_id}}",
+            "incident_number": "{{trigger.record.number}}",
+            "short_description": "{{trigger.record.short_description}}",
+            "description": "{{trigger.record.description}}",
+            "priority": "{{trigger.record.priority}}",
+            "category": "{{trigger.record.category}}",
+            "assigned_to": "{{trigger.record.assigned_to.display_value}}",
+            "assignment_group": "{{trigger.record.assignment_group.display_value}}",
+            "cmdb_ci": "{{trigger.record.cmdb_ci.display_value}}",
+            "state": "{{trigger.record.state}}"
+          },
+          "outputs": ["payload_json", "hmac_signature"]
+        }
+      },
+      {
+        "step": 2,
+        "name": "Send to GenAI Backend",
+        "type": "rest",
+        "description": "POST incident data to the FastAPI webhook endpoint.",
+        "config": {
+          "method": "POST",
+          "endpoint": "{{sys_property.x_genai.api_endpoint}}",
+          "headers": {
+            "Content-Type": "application/json",
+            "X-ServiceNow-Signature": "sha256={{step_1.hmac_signature}}",
+            "X-ServiceNow-Instance": "{{sys_property.instance_name}}"
+          },
+          "body": "{{step_1.payload_json}}",
+          "timeout_seconds": 30,
+          "retry": {
+            "max_attempts": 3,
+            "backoff_seconds": [2, 5, 10]
+          }
+        }
+      },
+      {
+        "step": 3,
+        "name": "Check Response",
+        "type": "condition",
+        "description": "Verify the REST call succeeded (HTTP 200/202).",
+        "condition": {
+          "if": "{{step_2.status_code}} IN [200, 202]",
+          "then": "step_4",
+          "else": "step_5"
+        }
+      },
+      {
+        "step": 4,
+        "name": "Log Success",
+        "type": "script",
+        "description": "Log successful trigger for audit trail.",
+        "script": {
+          "body": "gs.info('[GenAI Flow] AI analysis triggered for ' + trigger.record.number + ', recommendation_id=' + step_2.body.recommendation_id);"
+        }
+      },
+      {
+        "step": 5,
+        "name": "Handle Error",
+        "type": "script",
+        "description": "Log error but do not block incident processing.",
+        "script": {
+          "body": "gs.error('[GenAI Flow] Failed to trigger AI analysis for ' + trigger.record.number + '. HTTP ' + step_2.status_code + ': ' + step_2.body);"
+        }
+      }
+    ],
+
+    "error_handling": {
+      "on_error": "continue",
+      "log_level": "error",
+      "notification": {
+        "type": "email",
+        "to": "ai-ops-team@example.com",
+        "subject": "[GenAI] Flow Designer error for {{trigger.record.number}}",
+        "enabled": false
+      }
+    }
+  },
+
+  "metadata": {
+    "export_version": "1.0.0",
+    "exported_at": "2026-06-24T07:31:00Z",
+    "source_instance": "dev-placeholder",
+    "compatible_versions": ["Tokyo", "Utah", "Vancouver", "Washington", "Xanadu"]
+  }
+}

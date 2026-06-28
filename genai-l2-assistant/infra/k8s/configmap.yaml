@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: l2-assistant-config
+  namespace: l2-assistant
+  labels:
+    app: l2-assistant
+data:
+  # Application
+  APP_ENV: "production"
+  LOG_FORMAT: "json"
+  ALLOWED_ORIGINS: "https://your-instance.service-now.com"
+
+  # LLM
+  LLM_PROVIDER: "openai"
+  LLM_MODEL_NAME: "gpt-4o"
+
+  # Embedding
+  EMBEDDING_MODEL: "text-embedding-3-large"
+  EMBEDDING_DIMENSIONS: "3072"
+
+  # Vector Store
+  VECTOR_STORE_PROVIDER: "pinecone"
+  PINECONE_INDEX_NAME: "l2-assistant-index"
+  PINECONE_ENVIRONMENT: "us-east-1-aws"
+
+  # ServiceNow
+  SNOW_INSTANCE_URL: "https://your-instance.service-now.com"
+  SNOW_USERNAME: "svc_ai_assistant"
+
+  # Redis
+  REDIS_URL: "redis://redis-service:6379/0"
+
+  # Observability
+  LANGSMITH_PROJECT: "l2-assistant-prod"
+  PROMETHEUS_ENABLED: "true"

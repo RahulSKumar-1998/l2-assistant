@@ -1,0 +1,143 @@
+name: CI — Lint, Type Check, Unit Tests
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  APP_ENV: "development"
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Ruff
+        run: pip install ruff==0.4.8
+
+      - name: Run Ruff linter
+        run: ruff check app/ tests/
+
+      - name: Run Ruff formatter check
+        run: ruff format --check app/ tests/
+
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        run: pip install poetry==1.8.3
+
+      - name: Install dependencies
+        run: poetry install --no-interaction
+
+      - name: Run mypy
+        run: poetry run mypy app/
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        run: pip install poetry==1.8.3
+
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry/virtualenvs
+          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
+
+      - name: Install dependencies
+        run: poetry install --no-interaction
+
+      - name: Download spaCy model
+        run: poetry run python -m spacy download en_core_web_sm
+        continue-on-error: true
+
+      - name: Run unit tests
+        run: |
+          poetry run pytest tests/unit/ -v \
+            --tb=short \
+            --cov=app \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --junitxml=test-results.xml
+        env:
+          APP_ENV: development
+          LLM_PROVIDER: openai
+          VECTOR_STORE_PROVIDER: pinecone
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results.xml
+
+  eval-retrieval:
+    name: Retrieval Quality Gate
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        run: pip install poetry==1.8.3
+
+      - name: Install dependencies
+        run: poetry install --no-interaction
+
+      - name: Run retrieval evaluation
+        run: |
+          poetry run python scripts/eval_run.py \
+            --eval-type retrieval \
+            --output eval-results.json
+
+      - name: Upload eval results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: eval-results.json

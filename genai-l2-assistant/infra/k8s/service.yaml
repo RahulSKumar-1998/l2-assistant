@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: l2-assistant-api
+  namespace: l2-assistant
+  labels:
+    app: l2-assistant
+    component: api
+spec:
+  type: ClusterIP
+  selector:
+    app: l2-assistant
+    component: api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
