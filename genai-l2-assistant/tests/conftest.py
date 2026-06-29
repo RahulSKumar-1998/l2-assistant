@@ -11,6 +11,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
+import requests
+import urllib3
+
+# Bypass SSL verification for tiktoken downloads in corporate proxy environments
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+original_get = requests.get
+def patched_get(url, *args, **kwargs):
+    if "openaipublic" in str(url):
+        kwargs["verify"] = False
+    return original_get(url, *args, **kwargs)
+requests.get = patched_get
 
 from app.models.incident import (
     ExtractedEntity,

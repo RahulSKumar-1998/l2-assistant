@@ -21,7 +21,11 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
+from sqlalchemy import JSON, Uuid, String
+# Dialect-agnostic type definitions for both PostgreSQL and SQLite
+JSONB = JSON
+UUID = Uuid
+INET = String(45)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -393,13 +397,28 @@ def get_engine():
     global _engine
     if _engine is None:
         settings = get_settings()
-        _engine = create_async_engine(
-            settings.database.postgres_url,
-            echo=settings.is_development,
-            pool_size=20,
-            max_overflow=10,
-            pool_pre_ping=True,
-        )
+        url = settings.database.postgres_url
+        if url.startswith("sqlite"):
+            _engine = create_async_engine(
+                url,
+                echo=settings.is_development,
+                connect_args={"timeout": 30},
+            )
+            from sqlalchemy import event
+            @event.listens_for(_engine.sync_engine, "connect")
+            def set_sqlite_pragma(dbapi_connection, connection_record):
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
+        else:
+            _engine = create_async_engine(
+                url,
+                echo=settings.is_development,
+                pool_size=20,
+                max_overflow=10,
+                pool_pre_ping=True,
+            )
     return _engine
 
 
@@ -423,14 +442,20 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """
     factory = get_session_factory()
     async with factory() as session:
+        committed = False
         try:
             yield session
             await session.commit()
+            committed = True
         except Exception:
             await session.rollback()
             raise
         finally:
-            await session.close()
+            if not committed:
+                try:
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
 
 
 async def init_db() -> None:

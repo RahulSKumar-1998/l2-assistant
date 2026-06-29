@@ -146,30 +146,43 @@ class Embedder:
     # ── Lazy client initialisation ───────────────────────────────────────
 
     def _get_openai_client(self) -> object:
-        """Get or create async OpenAI client.
+        """Get or create OpenAIEmbeddings / AzureOpenAIEmbeddings client.
 
         Returns:
-            An ``AsyncOpenAI`` or ``AsyncAzureOpenAI`` client instance.
+            An OpenAIEmbeddings or AzureOpenAIEmbeddings client instance.
 
         Raises:
             ValueError: If no OpenAI API key is configured.
         """
         if self._openai_client is None:
-            from openai import AsyncAzureOpenAI, AsyncOpenAI
+            import httpx
 
             settings = get_settings()
+            http_client = httpx.Client(verify=False)
+            http_async_client = httpx.AsyncClient(verify=False)
+
             if settings.llm.is_azure:
-                self._openai_client = AsyncAzureOpenAI(
+                from langchain_openai import AzureOpenAIEmbeddings
+                self._openai_client = AzureOpenAIEmbeddings(
+                    azure_deployment=self._model_name,
                     api_key=settings.llm.azure_openai_api_key,
-                    azure_endpoint=settings.llm.azure_endpoint,  # type: ignore[arg-type]
+                    azure_endpoint=settings.llm.azure_endpoint,
                     api_version=settings.llm.azure_api_version,
+                    http_client=http_client,
+                    http_async_client=http_async_client,
                 )
             elif settings.llm.openai_api_key:
-                self._openai_client = AsyncOpenAI(api_key=settings.llm.openai_api_key)
+                from langchain_openai import OpenAIEmbeddings
+                self._openai_client = OpenAIEmbeddings(
+                    model=self._model_name,
+                    openai_api_key=settings.llm.openai_api_key,
+                    openai_api_base=settings.llm.openai_api_base,
+                    http_client=http_client,
+                    http_async_client=http_async_client,
+                )
             else:
                 raise ValueError(
-                    "No OpenAI API key configured. Set OPENAI_API_KEY or "
-                    "AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT."
+                    "No OpenAI API key configured. Set OPENAI_API_KEY."
                 )
         return self._openai_client
 
@@ -288,12 +301,8 @@ class Embedder:
         await self._rate_limiter.acquire(total_tokens)
 
         client = self._get_openai_client()
-        response = await client.embeddings.create(  # type: ignore[union-attr]
-            input=texts,
-            model=self._model_name,
-            dimensions=self._dimensions,
-        )
-        vectors = [item.embedding for item in response.data]
+        # client is an OpenAIEmbeddings or AzureOpenAIEmbeddings instance
+        vectors = await client.aembed_documents(texts)  # type: ignore[attr-defined]
         logger.debug(
             "openai_embeddings_created",
             count=len(texts),

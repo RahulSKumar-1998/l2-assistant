@@ -114,6 +114,8 @@ class EmbeddingPipeline:
             or settings.llm.openai_api_key
             or settings.llm.azure_openai_api_key
         )
+        from app.core.embedder import Embedder
+        self._embedder = Embedder()
 
     @property
     def progress(self) -> PipelineProgress:
@@ -340,24 +342,7 @@ class EmbeddingPipeline:
             RuntimeError: If the API call fails.
         """
         try:
-            import openai
-
-            client = openai.AsyncOpenAI(api_key=self._api_key)
-
-            response = await client.embeddings.create(
-                model=self._model,
-                input=texts,
-                dimensions=self._dimensions,
-            )
-
-            # Sort by index to ensure order matches input
-            sorted_data = sorted(response.data, key=lambda x: x.index)
-            return [item.embedding for item in sorted_data]
-
-        except ImportError as exc:
-            raise RuntimeError(
-                "openai package required: pip install openai"
-            ) from exc
+            return await self._embedder.embed_batch(texts)
         except Exception as exc:
             self._log.error(
                 "embedding_api_error",

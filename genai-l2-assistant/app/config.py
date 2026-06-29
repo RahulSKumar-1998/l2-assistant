@@ -8,6 +8,10 @@ container environment variables.
 from enum import Enum
 from functools import lru_cache
 from typing import Optional
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -52,14 +56,19 @@ class LLMSettings(BaseSettings):
         description="LLM provider: openai or anthropic",
     )
     model_name: str = Field(
-        default="gpt-4o",
+        default="azure_ai/genailab-maas-DeepSeek-V3-0324",
         alias="LLM_MODEL_NAME",
         description="Model identifier (e.g., gpt-4o, claude-3-5-sonnet-20241022)",
     )
     openai_api_key: Optional[str] = Field(
-        default=None,
+        default="XXXXXXXXXXX ",
         alias="OPENAI_API_KEY",
         description="OpenAI direct API key",
+    )
+    openai_api_base: Optional[str] = Field(
+        default="https://genailab.tcs.in",
+        alias="OPENAI_API_BASE",
+        description="OpenAI / custom API base URL",
     )
     azure_openai_api_key: Optional[str] = Field(
         default=None,
@@ -85,7 +94,11 @@ class LLMSettings(BaseSettings):
     @property
     def is_azure(self) -> bool:
         """Check if Azure OpenAI should be used."""
-        return self.azure_endpoint is not None and self.azure_openai_api_key is not None
+        if not self.azure_endpoint or not self.azure_openai_api_key:
+            return False
+        if "your-resource" in self.azure_endpoint or "your-azure-openai" in self.azure_openai_api_key:
+            return False
+        return True
 
 
 class EmbeddingSettings(BaseSettings):
@@ -93,7 +106,7 @@ class EmbeddingSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="EMBEDDING_", extra="ignore")
 
     model: str = Field(
-        default="text-embedding-3-large",
+        default="azure/genailab-maas-text-embedding-3-large",
         alias="EMBEDDING_MODEL",
         description="Embedding model name",
     )
@@ -132,7 +145,7 @@ class VectorStoreSettings(BaseSettings):
 
 class ServiceNowSettings(BaseSettings):
     """ServiceNow instance connection settings."""
-    model_config = SettingsConfigDict(env_prefix="SNOW_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
 
     instance_url: str = Field(
         default="https://dev-instance.service-now.com",
@@ -168,7 +181,11 @@ class ServiceNowSettings(BaseSettings):
     @property
     def use_oauth(self) -> bool:
         """Check if OAuth credentials are configured."""
-        return self.client_id is not None and self.client_secret is not None
+        if not self.client_id or not self.client_secret:
+            return False
+        if "your-client-id-here" in self.client_id or "your-client-secret-here" in self.client_secret:
+            return False
+        return True
 
 
 class DatabaseSettings(BaseSettings):

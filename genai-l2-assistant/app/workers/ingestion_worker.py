@@ -33,6 +33,37 @@ def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
     return loop
 
 
+def _run_coroutine(coro: Any) -> Any:
+    """Run a coroutine to completion, handling already-running event loops."""
+    loop = _get_or_create_event_loop()
+    if loop.is_running():
+        import queue
+        import threading
+        q = queue.Queue()
+
+        def worker():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                val = new_loop.run_until_complete(coro)
+                q.put((True, val))
+            except Exception as e:
+                q.put((False, e))
+            finally:
+                new_loop.close()
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+        success, result = q.get()
+        if success:
+            return result
+        else:
+            raise result
+    else:
+        return loop.run_until_complete(coro)
+
+
 async def _run_analysis_pipeline(
     snow_sys_id: str, engineer_id: str
 ) -> dict[str, Any]:
@@ -76,7 +107,8 @@ async def _run_analysis_pipeline(
     snow_client_cls = MockServiceNowClient if use_mock_client else ServiceNowClient
 
     # Step 1: Look up or create the incident in our database
-    async for session in get_db_session():
+    session_factory = get_session_factory()
+    async with session_factory() as session:
         stmt = select(IncidentDB).where(IncidentDB.snow_sys_id == snow_sys_id)
         result = await session.execute(stmt)
         incident = result.scalar_one_or_none()
@@ -128,14 +160,13 @@ async def _run_analysis_pipeline(
             generation_ms=recommendation.generation_latency_ms,
         )
 
+        await session.commit()
         return {
             "recommendation_id": str(recommendation.id),
             "incident_id": str(incident.id),
             "status": "completed",
             "confidence_score": recommendation.confidence_score,
         }
-
-    return {"status": "error", "detail": "Failed to acquire database session"}
 
 
 async def _index_ticket(snow_sys_id: str) -> dict[str, Any]:
@@ -150,13 +181,14 @@ async def _index_ticket(snow_sys_id: str) -> dict[str, Any]:
     Returns:
         Dictionary with indexing result status and metadata.
     """
-    from app.storage.postgres import IncidentDB, get_db_session
+    from app.storage.postgres import IncidentDB, get_session_factory
     from sqlalchemy import select
 
     log = logger.bind(snow_sys_id=snow_sys_id)
     log.info("ticket_indexing_started")
 
-    async for session in get_db_session():
+    session_factory = get_session_factory()
+    async with session_factory() as session:
         stmt = select(IncidentDB).where(IncidentDB.snow_sys_id == snow_sys_id)
         result = await session.execute(stmt)
         incident = result.scalar_one_or_none()
@@ -176,6 +208,7 @@ async def _index_ticket(snow_sys_id: str) -> dict[str, Any]:
         # Mark as indexed
         incident.is_indexed = True
         await session.flush()
+        await session.commit()
 
         log.info("ticket_indexed_successfully", incident_number=incident.number)
         return {
@@ -186,8 +219,6 @@ async def _index_ticket(snow_sys_id: str) -> dict[str, Any]:
             "upserted_count": result["upserted_count"],
             "failed_count": result["failed_count"],
         }
-
-    return {"status": "error", "detail": "Failed to acquire database session"}
 
 
 # ── Celery Tasks ────────────────────────────────────────────────────────────
@@ -230,8 +261,7 @@ def analyze_incident_async(
     log.info("analyze_incident_task_started")
 
     try:
-        loop = _get_or_create_event_loop()
-        result = loop.run_until_complete(
+        result = _run_coroutine(
             _run_analysis_pipeline(snow_sys_id, engineer_id)
         )
         log.info("analyze_incident_task_completed", result_status=result.get("status"))
@@ -281,8 +311,7 @@ def index_resolved_ticket(
     log.info("index_ticket_task_started")
 
     try:
-        loop = _get_or_create_event_loop()
-        result = loop.run_until_complete(_index_ticket(snow_sys_id))
+        result = _run_coroutine(_index_ticket(snow_sys_id))
         log.info("index_ticket_task_completed", result_status=result.get("status"))
         return result
     except Exception as exc:

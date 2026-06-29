@@ -8,11 +8,20 @@ production-ready implementations:
 
 A factory function ``get_vector_store()`` selects the backend based
 on application configuration.
+
+Changes from original:
+    - Fixed silent $in empty-list skip bug (now returns [] immediately)
+    - Added HNSW vector index on embedding column for cosine similarity
+    - Added GIN index on metadata JSONB column
+    - Moved import json out of inner upsert loop
+    - Combined describe_index into a single SQL round-trip
+    - Added hybrid_query() using full-text search + RRF for ServiceNow L2
 """
 
 from __future__ import annotations
 
 import abc
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
@@ -392,10 +401,17 @@ class PGVectorStore(VectorStore):
     extension for cosine similarity search. Supports metadata JSONB
     filtering and batch operations.
 
+    Indexes created on initialization:
+        - HNSW index on ``embedding`` column for fast cosine ANN search
+        - GIN index on ``metadata`` JSONB column for fast metadata filtering
+        - B-tree index on ``namespace`` column
+
     Example:
         >>> store = PGVectorStore(connection_url="postgresql+asyncpg://...")
         >>> await store.initialize()
         >>> await store.upsert([VectorRecord(id="1", values=[0.1, ...], metadata={...})])
+        >>> matches = await store.query(vector=[0.1, ...], top_k=5)
+        >>> matches = await store.hybrid_query(text="disk quota exceeded", vector=[0.1, ...], top_k=5)
     """
 
     def __init__(
@@ -424,7 +440,15 @@ class PGVectorStore(VectorStore):
         )
 
     async def _ensure_initialized(self) -> None:
-        """Lazily create engine, session factory, and table if needed."""
+        """Lazily create engine, session factory, and table if needed.
+
+        Creates the following on first call:
+            - pgvector extension
+            - Embeddings table
+            - HNSW ANN index on embedding column (pgvector >= 0.5 required)
+            - GIN index on metadata JSONB column
+            - B-tree index on namespace column
+        """
         if self._initialized:
             return
 
@@ -452,9 +476,9 @@ class PGVectorStore(VectorStore):
             expire_on_commit=False,
         )
 
-        # Ensure pgvector extension and table exist
         async with self._engine.begin() as conn:
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
             await conn.execute(text(f"""
                 CREATE TABLE IF NOT EXISTS {self._table_name} (
                     id TEXT PRIMARY KEY,
@@ -464,9 +488,31 @@ class PGVectorStore(VectorStore):
                     created_at TIMESTAMPTZ DEFAULT now()
                 )
             """))
+
+            # B-tree index for namespace equality filters
             await conn.execute(text(f"""
                 CREATE INDEX IF NOT EXISTS ix_{self._table_name}_namespace
                 ON {self._table_name} (namespace)
+            """))
+
+            # FIX: HNSW index for fast cosine ANN search (pgvector >= 0.5).
+            # Replaces full table scan on every query call.
+            # m=16, ef_construction=64 are good defaults; tune for recall vs speed.
+            # If on pgvector < 0.5, replace with:
+            #   USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
+            # and only create after loading initial data (needs ~3000+ rows).
+            await conn.execute(text(f"""
+                CREATE INDEX IF NOT EXISTS ix_{self._table_name}_embedding_hnsw
+                ON {self._table_name}
+                USING hnsw (embedding vector_cosine_ops)
+                WITH (m = 16, ef_construction = 64)
+            """))
+
+            # FIX: GIN index for JSONB metadata filtering (assignment_group,
+            # category, priority, etc.). Avoids seq scans on metadata column.
+            await conn.execute(text(f"""
+                CREATE INDEX IF NOT EXISTS ix_{self._table_name}_metadata_gin
+                ON {self._table_name} USING GIN (metadata)
             """))
 
         self._initialized = True
@@ -504,7 +550,7 @@ class PGVectorStore(VectorStore):
                     async with session.begin():
                         for record in batch:
                             vec_str = "[" + ",".join(str(v) for v in record.values) + "]"
-                            import json
+                            # FIX: moved json import out of inner loop
                             meta_json = json.dumps(record.metadata)
                             await session.execute(
                                 text(f"""
@@ -561,7 +607,8 @@ class PGVectorStore(VectorStore):
             top_k: Max results.
             namespace: Namespace filter.
             filter_metadata: JSONB metadata filter conditions.
-                Supports simple equality checks: ``{"key": "value"}``.
+                Supports simple equality checks: ``{"key": "value"}``,
+                ``$in`` list checks, and ``$gte`` range checks.
             include_metadata: Whether to return metadata.
 
         Returns:
@@ -571,9 +618,15 @@ class PGVectorStore(VectorStore):
 
         await self._ensure_initialized()
 
+        # FIX: short-circuit on empty $in list instead of silently skipping
+        if filter_metadata:
+            for value in filter_metadata.values():
+                if isinstance(value, dict) and "$in" in value:
+                    if not value["$in"]:
+                        return []
+
         vec_str = "[" + ",".join(str(v) for v in vector) + "]"
 
-        # Build WHERE clauses
         where_clauses = []
         params: dict[str, Any] = {
             "query_vec": vec_str,
@@ -588,9 +641,8 @@ class PGVectorStore(VectorStore):
             for idx, (key, value) in enumerate(filter_metadata.items()):
                 if isinstance(value, dict):
                     if "$in" in value:
-                        in_values = value["$in"] or []
-                        if not in_values:
-                            continue
+                        in_values = value["$in"]
+                        # Already short-circuited above if empty
                         placeholders = []
                         for item_idx, item in enumerate(in_values):
                             param_name = f"meta_val_{idx}_{item_idx}"
@@ -657,6 +709,184 @@ class PGVectorStore(VectorStore):
             self._log.error("pgvector_query_error", error=str(exc))
             raise
 
+    async def hybrid_query(
+        self,
+        text_query: str,
+        vector: list[float],
+        *,
+        top_k: int = 10,
+        namespace: str = "",
+        filter_metadata: Optional[dict[str, Any]] = None,
+        vector_weight: float = 0.6,
+        text_weight: float = 0.4,
+        rrf_k: int = 60,
+    ) -> list[QueryMatch]:
+        """Hybrid semantic + keyword search using Reciprocal Rank Fusion (RRF).
+
+        Combines pgvector cosine similarity (ANN) with PostgreSQL full-text
+        search (ts_vector / ts_rank) and merges results via RRF. Particularly
+        effective for ServiceNow L2 recommendations where exact terms like
+        error codes, CI names, or KB article IDs carry strong signal that
+        pure vector search may dilute.
+
+        The ``metadata`` column must contain a ``search_text`` key populated
+        with the full ticket/article text for full-text ranking to work::
+
+            metadata = {
+                "search_text": "disk quota exceeded /var/log full",
+                "assignment_group": "storage-ops",
+                "category": "infrastructure",
+                ...
+            }
+
+        RRF score formula:  1 / (rrf_k + rank)
+        Final score:        vector_weight * rrf_vector + text_weight * rrf_text
+
+        Args:
+            text_query: Raw keyword/phrase query string (e.g. ticket short desc).
+            vector: Semantic embedding of the query.
+            top_k: Number of final results to return.
+            namespace: Namespace filter.
+            filter_metadata: Metadata filter conditions (same syntax as query()).
+            vector_weight: Weight applied to vector RRF score (default 0.6).
+            text_weight: Weight applied to full-text RRF score (default 0.4).
+            rrf_k: RRF smoothing constant (default 60, per the original paper).
+
+        Returns:
+            List of QueryMatch sorted by combined RRF score descending.
+        """
+        from sqlalchemy import text as sa_text
+
+        await self._ensure_initialized()
+
+        # Short-circuit on empty $in filter
+        if filter_metadata:
+            for value in filter_metadata.values():
+                if isinstance(value, dict) and "$in" in value:
+                    if not value["$in"]:
+                        return []
+
+        vec_str = "[" + ",".join(str(v) for v in vector) + "]"
+
+        # Build shared WHERE clause (reused in both CTEs)
+        where_clauses = []
+        params: dict[str, Any] = {
+            "query_vec": vec_str,
+            "text_query": text_query,
+            "top_k": top_k,
+            "rrf_k": rrf_k,
+            "vector_weight": vector_weight,
+            "text_weight": text_weight,
+            # Fetch more candidates from each arm before merging
+            "candidate_k": top_k * 4,
+        }
+
+        if namespace:
+            where_clauses.append("namespace = :namespace")
+            params["namespace"] = namespace
+
+        if filter_metadata:
+            for idx, (key, value) in enumerate(filter_metadata.items()):
+                if isinstance(value, dict):
+                    if "$in" in value:
+                        placeholders = []
+                        for item_idx, item in enumerate(value["$in"]):
+                            param_name = f"meta_val_{idx}_{item_idx}"
+                            placeholders.append(f":{param_name}")
+                            params[param_name] = str(item)
+                        where_clauses.append(
+                            f"metadata->>'{key}' IN ({', '.join(placeholders)})"
+                        )
+                        continue
+                    if "$gte" in value:
+                        param_name = f"meta_val_{idx}"
+                        if key == "resolved_at":
+                            where_clauses.append(
+                                f"NULLIF(metadata->>'{key}', '')::timestamptz >= :{param_name}::timestamptz"
+                            )
+                        else:
+                            where_clauses.append(f"metadata->>'{key}' >= :{param_name}")
+                        params[param_name] = str(value["$gte"])
+                        continue
+                param_name = f"meta_val_{idx}"
+                where_clauses.append(f"metadata->>'{key}' = :{param_name}")
+                params[param_name] = str(value)
+
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        sql = f"""
+            WITH vector_ranked AS (
+                -- Semantic ANN arm: rank by cosine distance
+                SELECT
+                    id,
+                    metadata,
+                    ROW_NUMBER() OVER (ORDER BY embedding <=> :query_vec::vector) AS rank
+                FROM {self._table_name}
+                {where_sql}
+                ORDER BY embedding <=> :query_vec::vector
+                LIMIT :candidate_k
+            ),
+            text_ranked AS (
+                -- Full-text arm: rank by ts_rank on metadata->>'search_text'
+                SELECT
+                    id,
+                    metadata,
+                    ROW_NUMBER() OVER (
+                        ORDER BY ts_rank(
+                            to_tsvector('english', COALESCE(metadata->>'search_text', '')),
+                            plainto_tsquery('english', :text_query)
+                        ) DESC
+                    ) AS rank
+                FROM {self._table_name}
+                {where_sql}
+                ORDER BY ts_rank(
+                    to_tsvector('english', COALESCE(metadata->>'search_text', '')),
+                    plainto_tsquery('english', :text_query)
+                ) DESC
+                LIMIT :candidate_k
+            ),
+            rrf_merged AS (
+                -- Reciprocal Rank Fusion: merge both result sets
+                SELECT
+                    COALESCE(v.id, t.id) AS id,
+                    COALESCE(v.metadata, t.metadata) AS metadata,
+                    (
+                        COALESCE(:vector_weight * (1.0 / (:rrf_k + v.rank)), 0) +
+                        COALESCE(:text_weight  * (1.0 / (:rrf_k + t.rank)), 0)
+                    ) AS rrf_score
+                FROM vector_ranked v
+                FULL OUTER JOIN text_ranked t ON v.id = t.id
+            )
+            SELECT id, rrf_score, metadata
+            FROM rrf_merged
+            ORDER BY rrf_score DESC
+            LIMIT :top_k
+        """
+
+        try:
+            async with self._session_factory() as session:
+                result = await session.execute(sa_text(sql), params)
+                rows = result.fetchall()
+
+            matches = [
+                QueryMatch(
+                    id=row[0],
+                    score=float(row[1]),
+                    metadata=row[2] if isinstance(row[2], dict) else {},
+                )
+                for row in rows
+            ]
+
+            self._log.debug(
+                "pgvector_hybrid_query_completed",
+                match_count=len(matches),
+                top_k=top_k,
+            )
+            return matches
+        except Exception as exc:
+            self._log.error("pgvector_hybrid_query_error", error=str(exc))
+            raise
+
     async def delete(
         self,
         ids: list[str],
@@ -700,6 +930,8 @@ class PGVectorStore(VectorStore):
     async def describe_index(self) -> IndexStats:
         """Get pgvector table statistics.
 
+        FIX: Combined into a single SQL round-trip (was two separate queries).
+
         Returns:
             IndexStats with vector count and dimension info.
         """
@@ -709,23 +941,19 @@ class PGVectorStore(VectorStore):
 
         try:
             async with self._session_factory() as session:
-                # Total count
-                result = await session.execute(
-                    text(f"SELECT COUNT(*) FROM {self._table_name}")
-                )
-                total = result.scalar() or 0
-
-                # Count per namespace
+                # FIX: Single query replaces two round-trips.
+                # Total count is derived by summing namespace counts.
                 result = await session.execute(
                     text(
-                        f"SELECT namespace, COUNT(*) FROM {self._table_name} "
+                        f"SELECT namespace, COUNT(*) AS cnt "
+                        f"FROM {self._table_name} "
                         f"GROUP BY namespace"
                     )
                 )
-                namespaces = {}
-                for row in result.fetchall():
-                    ns = row[0] or "(default)"
-                    namespaces[ns] = row[1]
+                rows = result.fetchall()
+
+            namespaces = {(row[0] or "(default)"): int(row[1]) for row in rows}
+            total = sum(namespaces.values())
 
             return IndexStats(
                 total_vector_count=total,
@@ -735,6 +963,251 @@ class PGVectorStore(VectorStore):
             )
         except Exception as exc:
             self._log.error("pgvector_describe_error", error=str(exc))
+            raise
+
+
+# ── SQLite Implementation ───────────────────────────────────────────────────
+
+
+class SQLiteVectorStore(VectorStore):
+    """SQLite-backed vector store for local development.
+
+    Stores vectors as JSON array strings and performs cosine similarity
+    calculation in Python. Fully compatible with SQLite.
+    """
+
+    def __init__(
+        self,
+        connection_url: Optional[str] = None,
+        table_name: str = "vector_embeddings",
+        dimensions: int = 3072,
+    ) -> None:
+        """Initialize the SQLite vector store."""
+        self._connection_url = connection_url
+        self._table_name = table_name
+        self._dimensions = dimensions
+        self._engine: Any = None
+        self._session_factory: Any = None
+        self._initialized = False
+        self._log = logger.bind(
+            component="sqlite_vector_store",
+            table=table_name,
+        )
+
+    async def _ensure_initialized(self) -> None:
+        """Lazily create engine, session factory, and table if needed."""
+        if self._initialized:
+            return
+
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+        from sqlalchemy import text
+
+        url = self._connection_url
+        if url is None:
+            settings = get_settings()
+            url = settings.database.postgres_url
+
+        if url.startswith("sqlite"):
+            self._engine = create_async_engine(
+                url,
+                connect_args={"timeout": 30},
+            )
+            from sqlalchemy import event
+            @event.listens_for(self._engine.sync_engine, "connect")
+            def set_sqlite_pragma(dbapi_connection, connection_record):
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
+        else:
+            self._engine = create_async_engine(url)
+
+        self._session_factory = async_sessionmaker(
+            bind=self._engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+
+        async with self._engine.begin() as conn:
+            await conn.execute(text(f"""
+                CREATE TABLE IF NOT EXISTS {self._table_name} (
+                    id TEXT PRIMARY KEY,
+                    embedding TEXT,
+                    metadata TEXT DEFAULT '{{}}',
+                    namespace TEXT DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            await conn.execute(text(f"""
+                CREATE INDEX IF NOT EXISTS ix_{self._table_name}_namespace
+                ON {self._table_name} (namespace)
+            """))
+        self._initialized = True
+
+    async def upsert(
+        self,
+        records: list[VectorRecord],
+        *,
+        namespace: str = "",
+        batch_size: int = 100,
+    ) -> UpsertResult:
+        await self._ensure_initialized()
+        from sqlalchemy import text
+
+        upserted = 0
+        errors = []
+
+        try:
+            async with self._session_factory() as session:
+                for i in range(0, len(records), batch_size):
+                    batch = records[i : i + batch_size]
+                    async with session.begin():
+                        for record in batch:
+                            stmt = text(f"""
+                                INSERT OR REPLACE INTO {self._table_name}
+                                (id, embedding, metadata, namespace)
+                                VALUES (:id, :embedding, :metadata, :namespace)
+                            """)
+                            await session.execute(
+                                stmt,
+                                {
+                                    "id": record.id,
+                                    "embedding": json.dumps(record.values),
+                                    "metadata": json.dumps(record.metadata),
+                                    "namespace": namespace,
+                                },
+                            )
+                            upserted += 1
+            return UpsertResult(upserted_count=upserted, errors=errors)
+        except Exception as exc:
+            self._log.error("sqlite_vector_store_upsert_failed", error=str(exc))
+            return UpsertResult(upserted_count=upserted, errors=[str(exc)])
+
+    async def query(
+        self,
+        vector: list[float],
+        *,
+        top_k: int = 10,
+        namespace: str = "",
+        filter_metadata: Optional[dict[str, Any]] = None,
+        include_metadata: bool = True,
+    ) -> list[QueryMatch]:
+        await self._ensure_initialized()
+        from sqlalchemy import text
+        import numpy as np
+
+        query_vec = np.array(vector, dtype=np.float32)
+        query_norm = np.linalg.norm(query_vec)
+
+        try:
+            async with self._session_factory() as session:
+                stmt = text(f"""
+                    SELECT id, embedding, metadata FROM {self._table_name}
+                    WHERE namespace = :namespace
+                """)
+                result = await session.execute(stmt, {"namespace": namespace})
+                rows = result.fetchall()
+
+            matches = []
+            for row in rows:
+                row_id = row[0]
+                emb_json = row[1]
+                meta_json = row[2]
+
+                rec_metadata = json.loads(meta_json) if meta_json else {}
+
+                if filter_metadata:
+                    match_filter = True
+                    for k, v in filter_metadata.items():
+                        if rec_metadata.get(k) != v:
+                            match_filter = False
+                            break
+                    if not match_filter:
+                        continue
+
+                rec_vector = np.array(json.loads(emb_json), dtype=np.float32)
+                rec_norm = np.linalg.norm(rec_vector)
+
+                if query_norm > 0 and rec_norm > 0:
+                    score = float(np.dot(query_vec, rec_vector) / (query_norm * rec_norm))
+                    score = (score + 1.0) / 2.0
+                else:
+                    score = 0.0
+
+                matches.append(
+                    QueryMatch(
+                        id=row_id,
+                        score=score,
+                        metadata=rec_metadata if include_metadata else {},
+                    )
+                )
+
+            matches.sort(key=lambda x: x.score, reverse=True)
+            return matches[:top_k]
+
+        except Exception as exc:
+            self._log.error("sqlite_vector_store_query_failed", error=str(exc))
+            raise
+
+    async def delete(
+        self,
+        ids: list[str],
+        *,
+        namespace: str = "",
+    ) -> int:
+        await self._ensure_initialized()
+        from sqlalchemy import text
+
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    deleted_count = 0
+                    chunk_size = 100
+                    for i in range(0, len(ids), chunk_size):
+                        chunk = ids[i : i + chunk_size]
+                        placeholders = ", ".join(f":id_{idx}" for idx in range(len(chunk)))
+                        stmt = text(f"""
+                            DELETE FROM {self._table_name}
+                            WHERE namespace = :namespace AND id IN ({placeholders})
+                        """)
+                        params = {"namespace": namespace}
+                        for idx, id_val in enumerate(chunk):
+                            params[f"id_{idx}"] = id_val
+                        res = await session.execute(stmt, params)
+                        deleted_count += res.rowcount
+            return deleted_count
+        except Exception as exc:
+            self._log.error("sqlite_vector_store_delete_failed", error=str(exc))
+            raise
+
+    async def describe_index(self) -> IndexStats:
+        await self._ensure_initialized()
+        from sqlalchemy import text
+
+        try:
+            async with self._session_factory() as session:
+                result = await session.execute(
+                    text(f"SELECT COUNT(*) FROM {self._table_name}")
+                )
+                total = result.scalar() or 0
+
+                result = await session.execute(
+                    text(f"SELECT namespace, COUNT(*) FROM {self._table_name} GROUP BY namespace")
+                )
+                namespaces = {row[0]: row[1] for row in result.fetchall()}
+
+            return IndexStats(
+                total_vector_count=total,
+                dimension=self._dimensions,
+                index_fullness=0.0,
+                namespaces=namespaces,
+            )
+        except Exception as exc:
+            self._log.error("sqlite_vector_store_describe_failed", error=str(exc))
             raise
 
 
@@ -755,6 +1228,7 @@ def get_vector_store() -> VectorStore:
     """
     settings = get_settings()
     provider = settings.vector_store.provider
+    url = settings.database.postgres_url
 
     if provider == VectorStoreProvider.PINECONE:
         api_key = settings.vector_store.pinecone_api_key
@@ -769,8 +1243,13 @@ def get_vector_store() -> VectorStore:
         )
 
     if provider == VectorStoreProvider.PGVECTOR:
+        if url.startswith("sqlite"):
+            return SQLiteVectorStore(
+                connection_url=url,
+                dimensions=settings.embedding.dimensions,
+            )
         return PGVectorStore(
-            connection_url=settings.database.postgres_url,
+            connection_url=url,
             dimensions=settings.embedding.dimensions,
         )
 

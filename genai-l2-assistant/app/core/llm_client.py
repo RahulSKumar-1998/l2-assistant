@@ -132,32 +132,44 @@ class LLMClient:
     # ── Client Initialisation ────────────────────────────────────────────
 
     def _get_openai_client(self) -> object:
-        """Get or create async OpenAI / Azure OpenAI client.
+        """Get or create ChatOpenAI or AzureChatOpenAI client.
 
         Returns:
-            An ``AsyncOpenAI`` or ``AsyncAzureOpenAI`` client.
+            A ChatOpenAI or AzureChatOpenAI client.
 
         Raises:
             LLMAuthenticationError: If no API key is configured.
         """
         if self._openai_client is None:
-            from openai import AsyncAzureOpenAI, AsyncOpenAI
+            import httpx
 
             settings = self._settings
+            # Disabling SSL verification for custom gateway/proxy support (e.g. TCS GenAI Lab)
+            http_client = httpx.Client(verify=False)
+            http_async_client = httpx.AsyncClient(verify=False)
+
             if settings.llm.is_azure:
-                self._openai_client = AsyncAzureOpenAI(
+                from langchain_openai import AzureChatOpenAI
+                self._openai_client = AzureChatOpenAI(
+                    azure_deployment=self._model_name,
                     api_key=settings.llm.azure_openai_api_key,
-                    azure_endpoint=settings.llm.azure_endpoint,  # type: ignore[arg-type]
+                    azure_endpoint=settings.llm.azure_endpoint,
                     api_version=settings.llm.azure_api_version,
+                    http_client=http_client,
+                    http_async_client=http_async_client,
                 )
             elif settings.llm.openai_api_key:
-                self._openai_client = AsyncOpenAI(
+                from langchain_openai import ChatOpenAI
+                self._openai_client = ChatOpenAI(
+                    model=self._model_name,
                     api_key=settings.llm.openai_api_key,
+                    base_url=settings.llm.openai_api_base,
+                    http_client=http_client,
+                    http_async_client=http_async_client,
                 )
             else:
                 raise LLMAuthenticationError(
-                    "No OpenAI API key configured. Set OPENAI_API_KEY or "
-                    "AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT."
+                    "No OpenAI API key configured. Set OPENAI_API_KEY."
                 )
         return self._openai_client
 
@@ -186,7 +198,7 @@ class LLMClient:
     # ── OpenAI Generation ────────────────────────────────────────────────
 
     async def _generate_openai(self, prompt: LLMPrompt) -> LLMResponse:
-        """Generate text using OpenAI Chat Completions API.
+        """Generate text using langchain_openai ChatOpenAI client.
 
         Args:
             prompt: Structured prompt with system/user messages.
@@ -195,35 +207,50 @@ class LLMClient:
             LLMResponse with generated content and usage metrics.
 
         Raises:
-            LLMRateLimitError: On 429 rate limit responses.
+            LLMRateLimitError: On rate limit responses.
             LLMTimeoutError: On request timeouts.
             LLMError: On other API errors.
         """
         from openai import APITimeoutError, RateLimitError
+        from langchain_core.messages import SystemMessage, HumanMessage
 
         client = self._get_openai_client()
         start = time.monotonic()
 
+        messages = [
+            SystemMessage(content=prompt.system_prompt),
+            HumanMessage(content=prompt.user_message),
+        ]
+
+        kwargs = {}
+        if prompt.temperature is not None:
+            kwargs["temperature"] = prompt.temperature
+        if prompt.max_tokens is not None:
+            kwargs["max_tokens"] = prompt.max_tokens
+
         try:
-            response = await client.chat.completions.create(  # type: ignore[union-attr]
-                model=self._model_name,
-                messages=[
-                    {"role": "system", "content": prompt.system_prompt},
-                    {"role": "user", "content": prompt.user_message},
-                ],
-                temperature=prompt.temperature,
-                max_tokens=prompt.max_tokens,
-            )
+            # client is a ChatOpenAI / AzureChatOpenAI instance
+            response = await client.ainvoke(messages, **kwargs)  # type: ignore[attr-defined]
 
             latency_ms = int((time.monotonic() - start) * 1000)
-            choice = response.choices[0]
-            usage = response.usage
+
+            # Get token usage from response_metadata / usage_metadata
+            usage = getattr(response, "usage_metadata", None)
+            if usage:
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+            else:
+                token_usage = response.response_metadata.get("token_usage", {})
+                input_tokens = token_usage.get("prompt_tokens", 0)
+                output_tokens = token_usage.get("completion_tokens", 0)
+
+            model_name = response.response_metadata.get("model_name") or self._model_name
 
             return LLMResponse(
-                content=choice.message.content or "",
-                model=response.model,
-                input_tokens=usage.prompt_tokens if usage else 0,
-                output_tokens=usage.completion_tokens if usage else 0,
+                content=response.content or "",
+                model=model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 latency_ms=latency_ms,
             )
 
@@ -244,25 +271,28 @@ class LLMClient:
             Text chunks as they arrive.
         """
         from openai import APITimeoutError, RateLimitError
+        from langchain_core.messages import SystemMessage, HumanMessage
 
         client = self._get_openai_client()
 
+        messages = [
+            SystemMessage(content=prompt.system_prompt),
+            HumanMessage(content=prompt.user_message),
+        ]
+
+        kwargs = {}
+        if prompt.temperature is not None:
+            kwargs["temperature"] = prompt.temperature
+        if prompt.max_tokens is not None:
+            kwargs["max_tokens"] = prompt.max_tokens
+
         try:
-            stream = await client.chat.completions.create(  # type: ignore[union-attr]
-                model=self._model_name,
-                messages=[
-                    {"role": "system", "content": prompt.system_prompt},
-                    {"role": "user", "content": prompt.user_message},
-                ],
-                temperature=prompt.temperature,
-                max_tokens=prompt.max_tokens,
-                stream=True,
-            )
+            # client is a ChatOpenAI / AzureChatOpenAI instance
+            stream = client.astream(messages, **kwargs)  # type: ignore[attr-defined]
 
             async for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    yield delta.content
+                if chunk.content:
+                    yield chunk.content
 
         except RateLimitError as exc:
             raise LLMRateLimitError(f"OpenAI rate limit: {exc}") from exc

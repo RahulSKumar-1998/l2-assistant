@@ -143,6 +143,7 @@ class ServiceNowClient:
                 base_url=self.base_url,
                 timeout=httpx.Timeout(self._timeout),
                 follow_redirects=True,
+                verify=False,
                 headers={
                     "Accept": "application/json",
                     "Content-Type": "application/json",
@@ -374,7 +375,10 @@ class ServiceNowClient:
         # Build ServiceNow encoded query
         query_parts: list[str] = []
         if params.state:
-            query_parts.append(f"state={params.state}")
+            if "," in params.state:
+                query_parts.append(f"stateIN{params.state}")
+            else:
+                query_parts.append(f"state={params.state}")
         if params.assignment_group:
             query_parts.append(f"assignment_group.name={params.assignment_group}")
         if params.category:
@@ -585,23 +589,43 @@ class ServiceNowClient:
         Returns:
             Typed IncidentRecord.
         """
+        priority_val = record.get("priority", 4) or 4
+        if isinstance(priority_val, str):
+            digits = "".join(c for c in priority_val if c.isdigit())
+            priority = int(digits) if digits else 4
+        else:
+            priority = int(priority_val)
+
+        state_val = str(record.get("state", "1")).lower()
+        if "resolved" in state_val or "6" in state_val:
+            state = "6"
+        elif "closed" in state_val or "7" in state_val:
+            state = "7"
+        elif "progress" in state_val or "2" in state_val:
+            state = "2"
+        elif "new" in state_val or "1" in state_val:
+            state = "1"
+        else:
+            digits = "".join(c for c in state_val if c.isdigit())
+            state = digits if digits else "1"
+
         return IncidentRecord(
-            sys_id=record.get("sys_id", ""),
-            number=record.get("number", ""),
-            short_description=record.get("short_description", ""),
-            description=record.get("description", ""),
-            category=record.get("category", ""),
-            subcategory=record.get("subcategory", ""),
-            priority=int(record.get("priority", 4) or 4),
-            state=record.get("state", "1"),
-            assignment_group=record.get("assignment_group", ""),
-            assigned_to=record.get("assigned_to", ""),
-            cmdb_ci=record.get("cmdb_ci", ""),
+            sys_id=record.get("sys_id") or "",
+            number=record.get("number") or "",
+            short_description=record.get("short_description") or "",
+            description=record.get("description") or "",
+            category=record.get("category") or "",
+            subcategory=record.get("subcategory") or "",
+            priority=priority,
+            state=state,
+            assignment_group=record.get("assignment_group") or "",
+            assigned_to=record.get("assigned_to") or "",
+            cmdb_ci=record.get("cmdb_ci") or "",
             opened_at=ServiceNowClient._parse_datetime(record.get("opened_at")),
             resolved_at=ServiceNowClient._parse_datetime(record.get("resolved_at")),
-            work_notes=record.get("work_notes", ""),
-            resolution_notes=record.get("close_notes") or record.get("resolution_notes"),
-            root_cause=record.get("u_root_cause"),
+            work_notes=record.get("work_notes") or "",
+            resolution_notes=record.get("close_notes") or record.get("resolution_notes") or "",
+            root_cause=record.get("u_root_cause") or "",
         )
 
     @staticmethod

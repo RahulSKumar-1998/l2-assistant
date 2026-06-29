@@ -264,12 +264,12 @@ async def analyze_incident(body: AnalyzeRequest) -> AnalyzeResponse:
                 detail=f"Incident with sys_id {body.snow_sys_id} not found",
             )
         
-        # Exclude resolved/closed incidents from AI analysis
-        if incident.state in ("6", "7", "resolved", "closed"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Resolved or closed incidents cannot be submitted for AI analysis.",
-            )
+        # Exclude resolved/closed incidents from AI analysis is disabled per user request to allow resolved ticket analysis
+        # if incident.state in ("6", "7", "resolved", "closed"):
+        #     raise HTTPException(
+        #         status_code=status.HTTP_400_BAD_REQUEST,
+        #         detail="Resolved or closed incidents cannot be submitted for AI analysis.",
+        #     )
 
         rec = await _get_latest_recommendation(session, incident.id)
         if rec and rec.created_at:

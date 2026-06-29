@@ -1589,7 +1589,7 @@ body {
     <button class="topbar-back" id="backBtn" onclick="navigateBack()">← Dashboard</button>
   </div>
   <div class="topbar-center" id="breadcrumb">
-    <span class="breadcrumb-link" onclick="navigateBack()">Dashboard</span>
+    <span class="breadcrumb-link" id="breadcrumbParent" onclick="navigateBack()">Dashboard</span>
     <span class="breadcrumb-sep">›</span>
     <span class="breadcrumb-current" id="breadcrumbInc">INC0050001</span>
   </div>
@@ -1601,7 +1601,7 @@ body {
     <div class="topbar-time" id="clock">—</div>
     <div class="toggle-wrap">
       <span>Mock Mode</span>
-      <div class="toggle active" id="mockToggle" onclick="toggleMockMode()" title="Toggle mock data"></div>
+      <div class="toggle" id="mockToggle" onclick="toggleMockMode()" title="Toggle mock data"></div>
     </div>
   </div>
 </div>
@@ -1658,37 +1658,37 @@ body {
     <div class="kpi-card">
       <div class="accent-line" style="background:var(--blue);"></div>
       <div class="kpi-label">Total Incidents</div>
-      <div class="kpi-value" style="color:var(--cyan);">200</div>
+      <div id="kpiTotal" class="kpi-value" style="color:var(--cyan);">200</div>
       <div class="kpi-sub"><span class="kpi-delta-down">↑ 12%</span>&nbsp;vs last 90d</div>
     </div>
     <div class="kpi-card">
       <div class="accent-line" style="background:var(--red);"></div>
       <div class="kpi-label">Open</div>
-      <div class="kpi-value" style="color:var(--red);">31</div>
+      <div id="kpiOpen" class="kpi-value" style="color:var(--red);">31</div>
       <div class="kpi-sub"><span class="kpi-delta-down">↑ 4</span>&nbsp;since yesterday</div>
     </div>
     <div class="kpi-card">
       <div class="accent-line" style="background:var(--green);"></div>
       <div class="kpi-label">Resolved</div>
-      <div class="kpi-value" style="color:var(--green);">131</div>
+      <div id="kpiResolved" class="kpi-value" style="color:var(--green);">131</div>
       <div class="kpi-sub"><span class="kpi-delta-up">↑ 65.5%</span>&nbsp;resolution rate</div>
     </div>
     <div class="kpi-card">
       <div class="accent-line" style="background:var(--purple);"></div>
       <div class="kpi-label">Avg MTTR</div>
-      <div class="kpi-value" style="color:var(--purple);">234<span style="font-size:16px;font-weight:500;color:var(--text-mid);">m</span></div>
+      <div id="kpiAvgMttr" class="kpi-value" style="color:var(--purple);">234<span style="font-size:16px;font-weight:500;color:var(--text-mid);">m</span></div>
       <div class="kpi-sub"><span class="kpi-delta-up">↓ 18 min</span>&nbsp;vs last 90d</div>
     </div>
     <div class="kpi-card">
       <div class="accent-line" style="background:var(--amber);"></div>
       <div class="kpi-label">SLA Compliance</div>
-      <div class="kpi-value" style="color:var(--amber);">84<span style="font-size:16px;font-weight:500;color:var(--text-mid);">%</span></div>
+      <div id="kpiSla" class="kpi-value" style="color:var(--amber);">84<span style="font-size:16px;font-weight:500;color:var(--text-mid);">%</span></div>
       <div class="kpi-sub"><span class="kpi-delta-down">↓ 3%</span>&nbsp;vs target 95%</div>
     </div>
     <div class="kpi-card">
       <div class="accent-line" style="background:#00BFA5;"></div>
       <div class="kpi-label">AI Approval Rate</div>
-      <div class="kpi-value" style="color:#00BFA5;">78<span style="font-size:16px;font-weight:500;color:var(--text-mid);">%</span></div>
+      <div id="kpiAiApproval" class="kpi-value" style="color:#00BFA5;">78<span style="font-size:16px;font-weight:500;color:var(--text-mid);">%</span></div>
       <div class="kpi-sub"><span class="kpi-delta-up">↑ 6%</span>&nbsp;this month</div>
     </div>
   </div>
@@ -2061,7 +2061,7 @@ body {
         <span>Incident Resolved</span>
       </div>
       <p style="font-size: 12px; color: var(--text-mid); line-height: 1.5; margin-bottom: 12px;">
-        AI analysis is only performed on active incidents.
+        This incident is resolved. Below is the historical resolution, and live AI root cause analysis is running to provide further insights.
       </p>
       <div style="font-size: 11px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid rgba(30, 58, 95, 0.4); padding-top: 10px;">
         <div>
@@ -2282,7 +2282,7 @@ const MOCK_CHAT_RESPONSES = {
 
 // -- STATE --------------------------------------------------------------------
 const API_BASE = 'http://localhost:8000/api/v1';
-let mockMode = true;
+let mockMode = false;
 let currentIncident = null;
 let currentRecommendation = null;
 let chatSessionId = null;
@@ -2496,34 +2496,19 @@ function resetAndAnalyze() {
   const isResolved = currentIncident && (currentIncident.state === '6' || currentIncident.state === '7' || currentIncident.state === 'resolved' || currentIncident.state === 'closed');
   
   if (isResolved) {
-    setStatus('ready', 'Resolved');
-    
-    document.getElementById('loaderSection').classList.add('hidden');
     document.getElementById('resolvedBanner').classList.remove('hidden');
-    document.getElementById('chatSection').classList.add('hidden');
-    document.getElementById('copyResolutionBtn').classList.add('hidden');
-    
     document.getElementById('historicalResolutionNotes').textContent = currentIncident.rootCause || 'No historical resolution notes.';
     document.getElementById('historicalRootCause').textContent = currentIncident.rootCauseShort || 'Unknown';
-    
-    const data = MOCK_ANALYSIS[currentIncident.number] || {
-      triage_steps: [
-        { step: 1, action: 'Verify fix on ' + currentIncident.cmdb_ci, rationale: 'Ensure service is healthy.' }
-      ],
-      similar_incidents: [],
-      kb_references: [],
-      resolution_draft: currentIncident.rootCause
-    };
-    
-    renderRecommendation(data);
   } else {
     document.getElementById('resolvedBanner').classList.add('hidden');
-    document.getElementById('chatSection').classList.remove('hidden');
-    document.getElementById('copyResolutionBtn').classList.remove('hidden');
-    
-    setStatus('analysing', 'Analysing…');
-    triggerAnalysis();
   }
+  
+  // Show chat section and copy button for interaction
+  document.getElementById('chatSection').classList.remove('hidden');
+  document.getElementById('copyResolutionBtn').classList.remove('hidden');
+  
+  setStatus('analysing', 'Analysing…');
+  triggerAnalysis();
 }
 
 function setStatus(type, label) {
@@ -2573,7 +2558,7 @@ function triggerAnalysis() {
   });
 }
 
-function pollRecommendation(recId, attempt) {
+function pollRecommendation(recId, attempt = 0) {
   if (attempt > 30) {
     showToast('Analysis timed out. Falling back to mock data.');
     const data = currentIncident ? MOCK_ANALYSIS[currentIncident.number] : MOCK_ANALYSIS['INC0050001'];
@@ -2600,6 +2585,9 @@ function pollRecommendation(recId, attempt) {
 }
 
 function renderRecommendation(data) {
+  if (data && (data.status === 'completed' || data.status === 'complete') && data.result) {
+    data = data.result;
+  }
   currentRecommendation = data;
   
   if (data.incident_id) {
@@ -2899,17 +2887,31 @@ function showToast(message) {
   setTimeout(() => toast.remove(), 2600);
 }
 
+function parseDateSafe(dateStr) {
+  if (!dateStr) return null;
+  if (dateStr.includes('T')) {
+    return new Date(dateStr);
+  }
+  let d = new Date(dateStr);
+  if (isNaN(d.getTime())) {
+    d = new Date(dateStr.replace(/-/g, '/'));
+  }
+  return d;
+}
+
 function getDiffMinutes(openedStr, resolvedStr) {
   if (!openedStr || !resolvedStr) return 0;
-  const opened = new Date(openedStr.replace(/-/g, '/'));
-  const resolved = new Date(resolvedStr.replace(/-/g, '/'));
+  const opened = parseDateSafe(openedStr);
+  const resolved = parseDateSafe(resolvedStr);
+  if (!opened || !resolved || isNaN(opened) || isNaN(resolved)) return 0;
   const diffMs = resolved - opened;
   return Math.max(0, Math.floor(diffMs / 60000));
 }
 
 function getAgeMinutes(openedStr) {
   if (!openedStr) return 0;
-  const opened = new Date(openedStr.replace(/-/g, '/'));
+  const opened = parseDateSafe(openedStr);
+  if (!opened || isNaN(opened)) return 0;
   const now = new Date();
   const diffMs = now - opened;
   return Math.max(0, Math.floor(diffMs / 60000));
@@ -3077,6 +3079,8 @@ function buildAllIncidentsTable() {
   
   INCIDENTS.forEach(inc => {
     const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    tr.onclick = () => navigateToAnalysis(inc);
     const priClass = inc.priority === 1 ? 'p1' : 'p2';
     
     const isAnalyzed = ANALYZED_INCIDENTS.has(inc.number);
@@ -3096,14 +3100,14 @@ function buildAllIncidentsTable() {
     }
     
     tr.innerHTML = `
-      <td><span class="inc-number" onclick="navigateToAnalysis(INCIDENTS.find(i => i.number === '${inc.number}'))">${inc.number}</span></td>
+      <td><span class="inc-number">${inc.number}</span></td>
       <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(inc.title)}">${escapeHtml(inc.title)}</td>
       <td><span class="priority-pill ${priClass}">P${inc.priority}</span></td>
       <td style="font-size:11px;color:var(--text-mid);">${inc.category}</td>
       <td><span style="font-family:var(--mono);font-size:11px;color:var(--cyan);">${inc.cmdb_ci}</span></td>
       <td style="font-size:11px;color:var(--text-mid);">${inc.rootCauseShort}</td>
       <td><span class="ai-status-pill" style="${aiStatusBadgeStyle}">${aiStatus}</span></td>
-      <td><button class="analyze-btn" onclick="navigateToAnalysis(INCIDENTS.find(i => i.number === '${inc.number}'))">Analyze →</button></td>`;
+      <td><button class="analyze-btn">Analyze →</button></td>`;
     tbody.appendChild(tr);
   });
 }
@@ -3154,11 +3158,7 @@ function buildConsoleIncidentsTable() {
     
     const tr = document.createElement('tr');
     tr.style.cursor = 'pointer';
-    tr.onclick = (e) => {
-      if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A') {
-        navigateToAnalysis(inc);
-      }
-    };
+    tr.onclick = () => navigateToAnalysis(inc);
     
     let stateText = 'New';
     let stateBadgeStyle = 'background:var(--blue-lt);color:#fff;';
@@ -3186,14 +3186,14 @@ function buildConsoleIncidentsTable() {
     const priClass = inc.priority === 1 ? 'p1' : 'p2';
     
     tr.innerHTML = `
-      <td><span class="inc-number" onclick="navigateToAnalysis(INCIDENTS.find(i => i.number === '${inc.number}'))">${inc.number}</span></td>
+      <td><span class="inc-number">${inc.number}</span></td>
       <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(inc.title)}">${escapeHtml(inc.title)}</td>
       <td><span class="priority-pill ${priClass}">P${inc.priority}</span></td>
       <td style="font-size:11px;color:var(--text-mid);">${inc.category}</td>
       <td><span style="font-family:var(--mono);font-size:11px;color:var(--cyan);">${inc.cmdb_ci}</span></td>
       <td><span class="priority-pill" style="${stateBadgeStyle}">${stateText}</span></td>
       <td><span class="ai-status-pill" style="${aiStatusBadgeStyle}">${aiStatusText}</span></td>
-      <td><button class="analyze-btn" onclick="navigateToAnalysis(INCIDENTS.find(i => i.number === '${inc.number}'))">Analyze</button></td>
+      <td><button class="analyze-btn">Analyze</button></td>
     `;
     tbody.appendChild(tr);
   });
@@ -3377,7 +3377,7 @@ function getVolumeTrendData(incidents) {
   const weeklyData = {};
   incidents.forEach(inc => {
     if (!inc.openedAt) return;
-    const date = new Date(inc.openedAt.replace(/-/g, '/'));
+    const date = parseDateSafe(inc.openedAt);
     const day = date.getDay();
     const diff = date.getDate() - day + (day === 0 ? -6 : 1);
     const weekStart = new Date(date.setDate(diff));
@@ -3482,7 +3482,7 @@ function getMTTRTrendData(incidents) {
     const isResolved = (inc.state === '6' || inc.state === '7' || inc.state === 'resolved' || inc.state === 'closed');
     if (!isResolved || !inc.openedAt || !inc.resolvedAt) return;
     
-    const date = new Date(inc.openedAt.replace(/-/g, '/'));
+    const date = parseDateSafe(inc.openedAt);
     const day = date.getDay();
     const diff = date.getDate() - day + (day === 0 ? -6 : 1);
     const weekStart = new Date(date.setDate(diff));
@@ -3788,9 +3788,8 @@ function fetchLiveIncidents() {
       updateDashboard();
     })
     .catch(err => {
-      showToast('Live mode fetch failed, using static fallback: ' + err.message);
+      showToast('Live mode fetch failed: ' + err.message);
       INCIDENTS.length = 0;
-      STATIC_INCIDENTS.forEach(inc => INCIDENTS.push(JSON.parse(JSON.stringify(inc))));
       updateDashboard();
     });
 }
@@ -3799,7 +3798,13 @@ function fetchLiveIncidents() {
 // BOOTSTRAP
 // ===============================================================================
 document.addEventListener('DOMContentLoaded', () => {
+  if (!mockMode) {
+    INCIDENTS.length = 0;
+  }
   updateDashboard();
+  if (!mockMode) {
+    fetchLiveIncidents();
+  }
 
   document.getElementById('chatInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') sendChat();

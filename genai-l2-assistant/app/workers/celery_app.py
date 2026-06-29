@@ -14,17 +14,34 @@ _REDIS_URL: str = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 _BROKER_URL: str = os.environ.get("CELERY_BROKER_URL", _REDIS_URL)
 _BACKEND_URL: str = os.environ.get("CELERY_RESULT_BACKEND", _REDIS_URL)
 
+def _is_redis_available(url_str: str) -> bool:
+    import socket
+    from urllib.parse import urlparse
+    try:
+        url = urlparse(url_str)
+        host = url.hostname or "localhost"
+        port = url.port or 6379
+        s = socket.create_connection((host, port), timeout=0.5)
+        s.close()
+        return True
+    except Exception:
+        return False
+
+_REDIS_AVAILABLE = _is_redis_available(_REDIS_URL)
+
 # ── Celery App Instance ─────────────────────────────────────────────────────
 
 celery_app = Celery(
     "l2_assistant",
-    broker=_BROKER_URL,
-    backend=_BACKEND_URL,
+    broker=_BROKER_URL if _REDIS_AVAILABLE else "memory://",
+    backend=_BACKEND_URL if _REDIS_AVAILABLE else "cache+memory://",
 )
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
 celery_app.conf.update(
+    task_always_eager=not _REDIS_AVAILABLE,
+    task_eager_propagates=not _REDIS_AVAILABLE,
     # Serialization
     task_serializer="json",
     result_serializer="json",

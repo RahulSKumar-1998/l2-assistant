@@ -23,6 +23,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Patch requests to bypass SSL verification for tiktoken downloads
+import requests
+original_get = requests.get
+def patched_get(*args, **kwargs):
+    if len(args) > 0 and "openaipublic" in args[0]:
+        kwargs["verify"] = False
+    elif "url" in kwargs and "openaipublic" in kwargs["url"]:
+        kwargs["verify"] = False
+    return original_get(*args, **kwargs)
+requests.get = patched_get
+
 from app.config import get_settings
 from app.ingestion.mock_client import MockServiceNowClient
 from app.ingestion.pipeline import process_and_index, store_incident_record
@@ -55,7 +66,7 @@ async def fetch_resolved_incidents(
         source="mock" if use_mock else "servicenow",
     )
     client_cls = MockServiceNowClient if use_mock else ServiceNowClient
-    params = IncidentQueryParams(state="6", limit=limit, offset=offset)
+    params = IncidentQueryParams(state="6,7", limit=limit, offset=offset)
     async with client_cls() as client:  # type: ignore[call-arg]
         return await client.list_incidents(params)
 
@@ -105,18 +116,24 @@ async def store_and_optionally_index(
     session_factory = get_session_factory()
     stored_count = 0
     indexed_count = 0
+    from sqlalchemy import text
 
-    async with session_factory() as session:
-        for incident_record in incidents:
+    for incident_record in incidents:
+        async with session_factory() as session:
             incident_db = await store_incident_record(incident_record, session=session)
+            await session.commit()
             stored_count += 1
 
-            if not store_only:
-                result = await process_and_index(incident_db)
-                if int(result["upserted_count"]) > 0 and int(result["failed_count"]) == 0:
-                    indexed_count += 1
-
-        await session.commit()
+        if not store_only:
+            result = await process_and_index(incident_db)
+            if int(result["upserted_count"]) > 0 and int(result["failed_count"]) == 0:
+                indexed_count += 1
+                async with session_factory() as session:
+                    await session.execute(
+                        text("UPDATE incidents SET is_indexed = 1, updated_at = :now WHERE id = :id"),
+                        {"now": datetime.now(timezone.utc), "id": str(incident_db.id)}
+                    )
+                    await session.commit()
 
     logger.info(
         "store_and_index_batch_completed",
