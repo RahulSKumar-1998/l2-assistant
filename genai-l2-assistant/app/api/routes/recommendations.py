@@ -108,13 +108,34 @@ async def get_recommendation(recommendation_id: str) -> RecommendationResult:
     # ── Step 1: Try to parse as a UUID ──────────────────────────────────────
     rec_uuid: Optional[uuid_mod.UUID] = None
     try:
+        from app.workers.celery_app import task_to_recommendation_map
+        if recommendation_id in task_to_recommendation_map:
+            recommendation_id = task_to_recommendation_map[recommendation_id]
         rec_uuid = uuid_mod.UUID(recommendation_id)
     except (ValueError, AttributeError):
         # Not a standard UUID — likely a Celery task ID (also UUID-shaped but
         # let's handle both paths gracefully).
         pass
 
-    # ── Step 2: Check if this is a live Celery task ──────────────────────────
+    # ── Step 2: Try database lookup first if we have a valid UUID ──────────────────
+    if rec_uuid is not None:
+        async for session in get_db_session():
+            rec_stmt = (
+                select(RecommendationDB)
+                .where(RecommendationDB.id == rec_uuid)
+                .limit(1)
+            )
+            rec_result = await session.execute(rec_stmt)
+            rec = rec_result.scalar_one_or_none()
+            if rec:
+                log.info(
+                    "recommendation_retrieved",
+                    recommendation_id=str(rec.id),
+                    confidence=rec.confidence_score,
+                )
+                return _rec_db_to_result(rec)
+
+    # ── Step 3: Check if this is a live Celery task (only if not found in DB) ────
     celery_info = _check_celery_task(recommendation_id)
     if celery_info is not None:
         state = celery_info["state"]
@@ -137,6 +158,18 @@ async def get_recommendation(recommendation_id: str) -> RecommendationResult:
                     rec_uuid = uuid_mod.UUID(actual_rec_id_str)
                 except (ValueError, AttributeError):
                     pass
+
+            if rec_uuid is not None:
+                async for session in get_db_session():
+                    rec_stmt = (
+                        select(RecommendationDB)
+                        .where(RecommendationDB.id == rec_uuid)
+                        .limit(1)
+                    )
+                    rec_result = await session.execute(rec_stmt)
+                    rec = rec_result.scalar_one_or_none()
+                    if rec:
+                        return _rec_db_to_result(rec)
 
             # Fall back to incident_id lookup if we couldn't parse rec uuid
             if rec_uuid is None and incident_id_str:
@@ -167,40 +200,10 @@ async def get_recommendation(recommendation_id: str) -> RecommendationResult:
                 detail="Analysis task failed or was revoked. Please trigger a new analysis.",
             )
 
-    # ── Step 3: Direct DB lookup by recommendation UUID ──────────────────────
-    if rec_uuid is None:
-        # Still not a valid UUID — nothing more we can do
-        log.warning("invalid_recommendation_id_format")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Recommendation {recommendation_id} not found",
-        )
-
-    async for session in get_db_session():
-        rec_stmt = (
-            select(RecommendationDB)
-            .where(RecommendationDB.id == rec_uuid)
-            .limit(1)
-        )
-        rec_result = await session.execute(rec_stmt)
-        rec = rec_result.scalar_one_or_none()
-
-        if not rec:
-            log.info("no_recommendation_found", uuid=str(rec_uuid))
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No recommendation found for ID {recommendation_id}",
-            )
-
-        log.info(
-            "recommendation_retrieved",
-            recommendation_id=str(rec.id),
-            confidence=rec.confidence_score,
-        )
-        return _rec_db_to_result(rec)
-
-    # Should never reach here
+    # ── Step 4: Final fallback: 404 Not Found ──────────────────────────────────
+    log.warning("recommendation_not_found", recommendation_id=recommendation_id)
     raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="Unexpected error retrieving recommendation.",
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Recommendation or task {recommendation_id} not found",
     )
+

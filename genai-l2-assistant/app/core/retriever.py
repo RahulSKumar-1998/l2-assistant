@@ -323,6 +323,42 @@ class HybridRetriever:
             List of retrieved chunks ordered by BM25 score.
         """
         if self._bm25 is None or not self._bm25_corpus:
+            try:
+                from app.storage.postgres import IncidentDB, get_session_factory
+                from sqlalchemy import select
+                session_factory = get_session_factory()
+                async with session_factory() as session:
+                    stmt = select(IncidentDB).where(IncidentDB.is_indexed == True)
+                    result = await session.execute(stmt)
+                    incidents = result.scalars().all()
+                    
+                    corpus = []
+                    for inc in incidents:
+                        text_parts = [inc.short_description or "", inc.description or ""]
+                        if inc.resolution_notes:
+                            text_parts.append(inc.resolution_notes)
+                        if inc.root_cause:
+                            text_parts.append(inc.root_cause)
+                        
+                        corpus.append({
+                            "chunk_id": inc.snow_sys_id,
+                            "chunk_text": " ".join(text_parts),
+                            "chunk_type": "description",
+                            "source_id": inc.number,
+                            "source_type": "incident",
+                            "metadata": {
+                                "category": inc.category or "",
+                                "cmdb_ci": inc.cmdb_ci or "",
+                                "resolved_at": inc.resolved_at.isoformat() if inc.resolved_at else None,
+                                "resolution_notes": inc.resolution_notes or "",
+                            },
+                        })
+                    if corpus:
+                        await self.rebuild_bm25_index(corpus)
+            except Exception as exc:
+                logger.error("bm25_lazy_load_failed", error=str(exc))
+
+        if self._bm25 is None or not self._bm25_corpus:
             logger.debug("bm25_retrieve_skipped_no_index")
             return []
 

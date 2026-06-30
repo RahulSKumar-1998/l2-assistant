@@ -37,11 +37,15 @@ celery_app = Celery(
     backend=_BACKEND_URL if _REDIS_AVAILABLE else "cache+memory://",
 )
 
+# Shared map for task_id to recommendation_id when Redis is not available
+task_to_recommendation_map = {}
+
 # ── Configuration ───────────────────────────────────────────────────────────
 
 celery_app.conf.update(
     task_always_eager=not _REDIS_AVAILABLE,
     task_eager_propagates=not _REDIS_AVAILABLE,
+    task_store_eager_result=True,
     # Serialization
     task_serializer="json",
     result_serializer="json",

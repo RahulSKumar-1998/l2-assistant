@@ -1123,9 +1123,24 @@ class SQLiteVectorStore(VectorStore):
                 if filter_metadata:
                     match_filter = True
                     for k, v in filter_metadata.items():
-                        if rec_metadata.get(k) != v:
-                            match_filter = False
-                            break
+                        val = rec_metadata.get(k)
+                        if isinstance(v, dict):
+                            if "$in" in v:
+                                if val not in v["$in"]:
+                                    match_filter = False
+                                    break
+                            elif "$gte" in v:
+                                if val is None or val < v["$gte"]:
+                                    match_filter = False
+                                    break
+                            else:
+                                if val != v:
+                                    match_filter = False
+                                    break
+                        else:
+                            if val != v:
+                                match_filter = False
+                                break
                     if not match_filter:
                         continue
 

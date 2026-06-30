@@ -127,46 +127,50 @@ async def _run_analysis_pipeline(
         except Exception:
             log.warning("incident_refresh_failed_using_db_copy", exc_info=True)
 
-        from app.ingestion.pipeline import incident_db_to_record
-        from app.ingestion.ticket_processor import TicketPreprocessor
-
-        vector_store = get_vector_store()
-        embedder = Embedder()
-        retriever = HybridRetriever(embedder=embedder, vector_store=vector_store)
-        reranker = Reranker()
-        context_assembler = ContextAssembler()
-        llm_client = LLMClient()
-        rag_pipeline = RAGPipeline(
-            embedder=embedder,
-            retriever=retriever,
-            reranker=reranker,
-            context_assembler=context_assembler,
-            llm_client=llm_client,
-            db_session_factory=get_session_factory(),
-        )
-
-        incident_record = incident_db_to_record(incident)
-        processed_ticket = TicketPreprocessor().preprocess(incident_record)
-        recommendation = await rag_pipeline.analyze_incident(
-            ticket=processed_ticket,
-            incident_db_id=incident.id,
-        )
-
-        log.info(
-            "analysis_pipeline_completed",
-            recommendation_id=str(recommendation.id),
-            confidence=recommendation.confidence_score,
-            retrieval_ms=recommendation.retrieval_latency_ms,
-            generation_ms=recommendation.generation_latency_ms,
-        )
-
         await session.commit()
-        return {
-            "recommendation_id": str(recommendation.id),
-            "incident_id": str(incident.id),
-            "status": "completed",
-            "confidence_score": recommendation.confidence_score,
-        }
+        # Save values needed outside of the session block
+        incident_db_id = incident.id
+        from app.ingestion.pipeline import incident_db_to_record
+        incident_record = incident_db_to_record(incident)
+
+    # Step 2: Run RAG pipeline outside of the first session block to prevent database locking
+    from app.ingestion.ticket_processor import TicketPreprocessor
+
+    vector_store = get_vector_store()
+    embedder = Embedder()
+    retriever = HybridRetriever(embedder=embedder, vector_store=vector_store)
+    reranker = Reranker()
+    context_assembler = ContextAssembler()
+    llm_client = LLMClient()
+    rag_pipeline = RAGPipeline(
+        embedder=embedder,
+        retriever=retriever,
+        reranker=reranker,
+        context_assembler=context_assembler,
+        llm_client=llm_client,
+        db_session_factory=get_session_factory(),
+    )
+
+    processed_ticket = TicketPreprocessor().preprocess(incident_record)
+    recommendation = await rag_pipeline.analyze_incident(
+        ticket=processed_ticket,
+        incident_db_id=incident_db_id,
+    )
+
+    log.info(
+        "analysis_pipeline_completed",
+        recommendation_id=str(recommendation.id),
+        confidence=recommendation.confidence_score,
+        retrieval_ms=recommendation.retrieval_latency_ms,
+        generation_ms=recommendation.generation_latency_ms,
+    )
+
+    return {
+        "recommendation_id": str(recommendation.id),
+        "incident_id": str(incident_db_id),
+        "status": "completed",
+        "confidence_score": recommendation.confidence_score,
+    }
 
 
 async def _index_ticket(snow_sys_id: str) -> dict[str, Any]:
@@ -264,6 +268,9 @@ def analyze_incident_async(
         result = _run_coroutine(
             _run_analysis_pipeline(snow_sys_id, engineer_id)
         )
+        if self.request.id and "recommendation_id" in result:
+            from app.workers.celery_app import task_to_recommendation_map
+            task_to_recommendation_map[self.request.id] = result["recommendation_id"]
         log.info("analyze_incident_task_completed", result_status=result.get("status"))
         return result
     except Exception as exc:

@@ -382,7 +382,8 @@ class MockServiceNowClient:
 
         # Apply filters
         if params.state:
-            results = [r for r in results if r["state"] == params.state]
+            states = [s.strip() for s in params.state.split(",")]
+            results = [r for r in results if r["state"] in states]
         if params.category:
             results = [r for r in results if r["category"].lower() == params.category.lower()]
         if params.assignment_group:

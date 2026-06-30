@@ -373,6 +373,13 @@ async def analyze_incident(body: AnalyzeRequest) -> AnalyzeResponse:
         task = analyze_incident_async.delay(body.snow_sys_id, body.engineer_id)
         log.info("analysis_task_enqueued", task_id=task.id)
 
+        # Map task ID to recommendation ID for eager execution
+        if hasattr(task, "result") and task.result and isinstance(task.result, dict):
+            from app.workers.celery_app import task_to_recommendation_map
+            rec_id = task.result.get("recommendation_id")
+            if rec_id:
+                task_to_recommendation_map[task.id] = rec_id
+
         return AnalyzeResponse(
             recommendation_id=task.id,
             status="queued",
@@ -431,11 +438,11 @@ async def get_recommendation(snow_sys_id: str) -> AnalyzeResponse:
                 )
 
         # Stale or missing — trigger fresh analysis. Check if resolved first!
-        if incident.state in ("6", "7", "resolved", "closed"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Resolved or closed incidents cannot be submitted for AI analysis.",
-            )
+        # if incident.state in ("6", "7", "resolved", "closed"):
+        #     raise HTTPException(
+        #         status_code=status.HTTP_400_BAD_REQUEST,
+        #         detail="Resolved or closed incidents cannot be submitted for AI analysis.",
+        #     )
 
         log.info("triggering_fresh_analysis")
         try:
