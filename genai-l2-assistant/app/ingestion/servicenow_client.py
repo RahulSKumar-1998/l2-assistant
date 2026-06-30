@@ -625,12 +625,19 @@ class ServiceNowClient:
         Returns:
             Typed KBArticle.
         """
+        def _to_str(val: Any) -> str:
+            if not val:
+                return ""
+            if isinstance(val, dict):
+                return val.get("display_value") or val.get("value") or ""
+            return str(val)
+
         return KBArticle(
-            sys_id=record.get("sys_id", ""),
-            number=record.get("number", ""),
-            short_description=record.get("short_description", ""),
-            text=record.get("text", ""),
-            category=record.get("kb_category", record.get("category", "")),
+            sys_id=_to_str(record.get("sys_id")),
+            number=_to_str(record.get("number")),
+            short_description=_to_str(record.get("short_description")),
+            text=_to_str(record.get("text")),
+            category=_to_str(record.get("kb_category") or record.get("category")),
             valid_to=ServiceNowClient._parse_datetime(record.get("valid_to")),
-            workflow_state=record.get("workflow_state", "published"),
+            workflow_state=_to_str(record.get("workflow_state", "published")),
         )

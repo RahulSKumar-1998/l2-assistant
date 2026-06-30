@@ -38,7 +38,7 @@ from app.config import get_settings
 from app.ingestion.mock_client import MockServiceNowClient
 from app.ingestion.pipeline import process_and_index, store_incident_record
 from app.ingestion.servicenow_client import ServiceNowClient
-from app.models.incident import IncidentQueryParams, IncidentRecord
+from app.models.incident import IncidentQueryParams, IncidentRecord, KBArticle
 from app.storage.postgres import get_session_factory
 
 logger = structlog.get_logger(__name__)
@@ -71,7 +71,12 @@ async def fetch_resolved_incidents(
         return await client.list_incidents(params)
 
 
-async def fetch_kb_articles(limit: int, offset: int = 0) -> list[dict]:
+async def fetch_kb_articles(
+    limit: int,
+    offset: int = 0,
+    *,
+    use_mock: bool = False,
+) -> list[KBArticle]:
     """Fetch published KB articles from ServiceNow.
 
     Args:
@@ -82,11 +87,16 @@ async def fetch_kb_articles(limit: int, offset: int = 0) -> list[dict]:
         List of KB article records.
     """
     logger.info(
-        "fetch_kb_articles_not_implemented",
+        "fetch_kb_articles",
         limit=limit,
         offset=offset,
+        source="mock" if use_mock else "servicenow",
     )
-    return []
+    from app.models.incident import KBQueryParams
+    client_cls = MockServiceNowClient if use_mock else ServiceNowClient
+    params = KBQueryParams(limit=limit, offset=offset)
+    async with client_cls() as client:  # type: ignore[call-arg]
+        return await client.list_kb_articles(params)
 
 
 async def store_and_optionally_index(
@@ -229,18 +239,45 @@ async def bootstrap(
                 rate=f"{rate:.1f} records/sec",
             )
 
-    # ── Phase 2: KB articles (still optional / not yet wired here) ──────
+    # ── Phase 2: KB articles ─────────────────────────────────────────────
     logger.info("phase_2_start", phase="kb_articles")
     offset = 0
     kb_count = 0
 
     while True:
-        articles = await fetch_kb_articles(limit=batch_size, offset=offset)
+        articles = await fetch_kb_articles(
+            limit=batch_size,
+            offset=offset,
+            use_mock=use_mock,
+        )
 
         if not articles:
             break
 
-        kb_count += len(articles)
+        try:
+            if not store_only:
+                from app.ingestion.kb_processor import KBArticleProcessor
+                from app.ingestion.embedding_pipeline import EmbeddingPipeline
+                from app.storage.vector_store import get_vector_store
+
+                processor = KBArticleProcessor()
+                chunks = processor.process_batch(articles)
+
+                if chunks and not dry_run:
+                    vector_store = get_vector_store()
+                    pipeline = EmbeddingPipeline(vector_store=vector_store)
+                    result = await pipeline.run_batch(chunks)
+                    total_indexed += result.upserted_count
+                    logger.info(
+                        "kb_batch_indexed",
+                        batch_size=len(articles),
+                        chunks=len(chunks),
+                        upserted=result.upserted_count,
+                    )
+            kb_count += len(articles)
+        except Exception as e:
+            total_errors += len(articles)
+            logger.error("kb_batch_error", error=str(e), offset=offset)
 
         offset += len(articles)
 

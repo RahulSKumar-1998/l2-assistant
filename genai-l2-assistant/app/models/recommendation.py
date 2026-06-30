@@ -20,6 +20,10 @@ class TriageStep(BaseModel):
         default=None,
         description="Optional CLI command or script to execute",
     )
+    kb_articles: Optional[list[str]] = Field(
+        default=None,
+        description="Optional list of KB numbers referred to in this step",
+    )
 
 
 class SimilarIncident(BaseModel):

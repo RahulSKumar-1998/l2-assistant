@@ -1523,6 +1523,20 @@ Slack escalation: #incident-payments channel active. VP Engineering notified.</t
         li.className = 'step-card';
         li.id = 'step-' + step.step;
 
+        let kbSectionHtml = '';
+        if (step.kb_articles && step.kb_articles.length > 0) {
+          kbSectionHtml = `
+          <div class="step-kb-references" style="margin: 8px 12px 8px 36px; padding: 6px 10px; background: var(--bg-hover, #f6f6f6); border-radius: 4px; border-left: 3px solid var(--accent, #007bff); display: flex; flex-direction: column; gap: 4px;">
+            <span style="font-size: 10px; font-weight: bold; color: var(--text-lo, #666); text-transform: uppercase; letter-spacing: 0.5px;">Referenced Knowledge Base Articles</span>
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">`;
+          step.kb_articles.forEach(kbNum => {
+            kbSectionHtml += `<span class="kb-badge" style="background: var(--bg-card, #ffffff); color: var(--text-hi, #333); border: 1px solid var(--border, #ccc); border-radius: 4px; font-size: 11px; padding: 2px 6px; font-family: monospace; font-weight: bold; display: inline-flex; align-items: center; gap: 4px;">📖 ${escapeHtml(kbNum)}</span>`;
+          });
+          kbSectionHtml += `
+            </div>
+          </div>`;
+        }
+
         let html = `
           <div class="step-card__header">
             <input type="checkbox" class="step-checkbox" onchange="toggleStepComplete(${step.step}, this.checked)" />
@@ -1532,6 +1546,7 @@ Slack escalation: #incident-payments channel active. VP Engineering notified.</t
               <svg viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
             </button>
           </div>
+          ${kbSectionHtml}
           <div class="step-rationale hidden" id="rationale-${step.step}">
             ${escapeHtml(step.rationale)}
           </div>`;

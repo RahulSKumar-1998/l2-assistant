@@ -50,7 +50,7 @@ Your task is to analyze the current incident using the provided context (similar
 INSTRUCTIONS:
 1. Analyze the incident description and context carefully.
 2. Identify the most likely root cause based on similar past incidents and KB articles.
-3. Provide actionable triage steps with rationale and commands where applicable.
+3. Provide actionable triage steps with rationale, commands where applicable, and a list of referenced KB article numbers in the "kb_articles" field.
 4. Draft a resolution note suitable for ServiceNow work notes.
 5. Determine if L3 escalation is needed (escalate for: security incidents, data corruption, infrastructure failures requiring vendor involvement, or issues beyond L2 scope).
 6. Assign a confidence score between 0.0 and 1.0 based on how well the context matches.
@@ -64,7 +64,8 @@ You MUST respond with valid JSON in exactly this format:
             "step": 1,
             "action": "Description of the action to take",
             "rationale": "Why this step is recommended",
-            "command": "optional CLI command or null"
+            "command": "optional CLI command or null",
+            "kb_articles": ["KB0012345"]
         }}
     ],
     "resolution_draft": "Draft resolution note for ServiceNow work notes",
@@ -79,6 +80,7 @@ IMPORTANT:
 - Include CLI commands or scripts when they would help the engineer.
 - Set escalate_to_l3 to true ONLY when the issue genuinely requires L3.
 - The confidence_score should reflect how much supporting evidence exists in the context.
+- For each triage step, populate the "kb_articles" field with the specific KB numbers (e.g. ["KB0020005"]) that contain the procedures or information for that step (or leave it as an empty list [] if no KB article directly supports it).
 """
 
 CHAT_PROMPT_TEMPLATE = """You are an expert L2 Support Engineer AI assistant. You are in a follow-up conversation about an incident that you previously analyzed.
@@ -223,6 +225,7 @@ class RAGPipeline:
                     action=step_data.get("action", ""),
                     rationale=step_data.get("rationale", ""),
                     command=step_data.get("command"),
+                    kb_articles=step_data.get("kb_articles"),
                 )
             )
 
@@ -240,14 +243,21 @@ class RAGPipeline:
                     )
                 )
 
+        escalate_to_l3 = parsed.get("escalate_to_l3", False)
+        escalation_reason = parsed.get("escalation_reason")
+
+        if len(similar_incidents) == 0 and len(kb_refs) == 0:
+            escalate_to_l3 = True
+            escalation_reason = "No similar historical incidents or relevant Knowledge Base (KB) articles found in the reference repository."
+
         return RecommendationResult(
             snow_sys_id=ticket.sys_id,
             root_cause_prediction=parsed.get("root_cause_prediction", "Unable to determine root cause."),
             confidence_score=max(0.0, min(1.0, parsed.get("confidence_score", 0.5))),
             triage_steps=triage_steps,
             resolution_draft=parsed.get("resolution_draft", ""),
-            escalate_to_l3=parsed.get("escalate_to_l3", False),
-            escalation_reason=parsed.get("escalation_reason"),
+            escalate_to_l3=escalate_to_l3,
+            escalation_reason=escalation_reason,
             similar_incidents=similar_incidents,
             kb_references=kb_refs,
             sources_used=parsed.get("sources_used", context.sources_used),
@@ -376,10 +386,7 @@ class RAGPipeline:
         if ticket.keywords:
             query_text += f" | Keywords: {', '.join(ticket.keywords[:5])}"
 
-        retrieval_filters = filters or RetrievalFilters(
-            categories=[ticket.category] if ticket.category else None,
-            cmdb_cis=[ticket.cmdb_ci] if ticket.cmdb_ci else None,
-        )
+        retrieval_filters = filters or RetrievalFilters()
 
         retrieval_query = RetrievalQuery(
             query_text=query_text,
